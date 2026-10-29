@@ -25,7 +25,8 @@ const fireEvent = (node, type, detail, options) => {
 
 // Process the imported data
 const devicemap = new Map(Object.entries(devices));
-var appmap = new Map(Object.entries(launcherData));
+const baseAppMap = new Map(Object.entries(launcherData));
+const appMapCache = new WeakMap();
 const translationmap = new Map(Object.entries(rosettaStone));
 
 
@@ -33,45 +34,35 @@ const translationmap = new Map(Object.entries(rosettaStone));
 const appButtonMax = { "AF4":  6, "AF5":  6, "AF6":  6, "AFJTV": 6, "AFXF2": 6, "AR1": 10, "AR2":   8, "AR3":  8,
                        "CC1":  8, "CC2":  8, "CC3":  8, "NS2":   6, "ON1":   8, "ON2":  8, "RVRP": 10, "RHR": 10,
                        "RTR":  8, "RWR": 10, "RVR": 10, "RSR":  10, "XM1":  10, "XM2": 10, "HO1":   6, "HO2":  8,
-                       "HO3":  6, "HO4":  6, "AL1": appmap.size,  "AL2": appmap.size,};
+                       "HO3":  6, "HO4":  6, "AL1": baseAppMap.size,  "AL2": baseAppMap.size,};
 
 
-function deviceAttributeQuery(deviceAttribute, configvar){
-  var deviceTypeRef = configvar.device_type;
-  if(configvar[deviceAttribute+'_override']) {
-    if(configvar[deviceAttribute+'_override'] != 'none') {
-        return configvar[deviceAttribute+'_override'];
-    }
-  }
-  var attributeValue = '';
-  var deviceSearch = function(deviceName, jsonData) {
-    for (var key in jsonData) {
-      if(typeof(jsonData[key]) === 'object') {
-        if(key == deviceName) {
-          attributeValue = String(jsonData[key][deviceAttribute]);
-        }
-        else {
-          deviceSearch(deviceName, jsonData[key]);
-        }
+// Device definitions are static: index them once rather than traversing the
+// complete catalog for every attribute in every render and button press.
+const deviceAttributes = new Map();
+for (const family of Object.values(devices)) {
+  for (const [category, entries] of Object.entries(family)) {
+    if (category !== 'meta') {
+      for (const [id, attributes] of Object.entries(entries)) {
+        deviceAttributes.set(id, attributes);
       }
     }
-    return attributeValue;
   }
-  return String(deviceSearch(deviceTypeRef, devices));
 }
 
+function deviceAttributeQuery(deviceAttribute, configvar) {
+  const override = configvar[deviceAttribute + '_override'];
+  if (override && override !== 'none') return override;
+  const attributes = deviceAttributes.get(configvar.device_type);
+  return attributes ? String(attributes[deviceAttribute]) : '';
+}
 
 function truncate(str, length) {
   return str.length > length ? str.substr(0, length) : str;
 }
 
 
-function resetAppMap(){
-    appmap = new Map(Object.entries(launcherData));
-}
-
-
-function handlehdmi(config, inputs = 0) {
+function handlehdmi(appmap, config, inputs = 0) {
   if( inputs > 0 ) {
     for (let i = 1; i <= inputs; i++) {
       var configitem = "hdmi_"+i;
@@ -96,7 +87,7 @@ function handlehdmi(config, inputs = 0) {
 }
 
 
-function handlecustomlaunchers(config) {
+function handlecustomlaunchers(appmap, config) {
     // Experimental - Only one of them works through the roku api for some reason ///
 //    if (config.device_family == "roku") {
 //        appmap.set("roku-secret-screen", {"button": "Secret", "friendlyName": "Function: Secret Screen 1"});
@@ -129,13 +120,13 @@ function handlecustomlaunchers(config) {
     })
 }
 
-function handleAVInputs(config, avInputs = 0) {
+function handleAVInputs(appmap, config, avInputs = 0) {
     if (avInputs > 0 && config.device_family == "roku") {
         appmap.set("av1_input", {"button": "AV", "friendlyName": "AV Input", "remoteCommand": '{"command": "input_av1", "num_repeats": 1, "hold_secs": 0}'});
     }
 }
 
-function handleTunerInputs(config, tunerInput) {
+function handleTunerInputs(appmap, config, tunerInput) {
     if (config.device_family == "roku" && (tunerInput == true || tunerInput == 'true')) {
         appmap.set("tuner_input", {"button": "TV Tuner", "friendlyName": "TV Tuner", "remoteCommand": '{"command": "input_tuner", "num_repeats": 1, "hold_secs": 0}'});
         //appmap.set("roku-tv-channel", {"button": "Channel", "friendlyName": "Function: Input TV Channel"});
@@ -151,12 +142,24 @@ function handleTunerInputs(config, tunerInput) {
 }
 
 
-function refreshAppMap(config, inputs = 0, avInputs = 0, tuner = true){
-    resetAppMap();
-    handlehdmi(config, inputs);
-    handlecustomlaunchers(config);
-    handleAVInputs(config, avInputs);
-    handleTunerInputs(config, tuner);
+// Config objects are replaced on edits. Weak caching keeps separate cards and
+// the editor isolated and releases their catalogs when configs are discarded.
+function getAppMap(config, forCommands = false) {
+    let cached = appMapCache.get(config);
+    if (!cached) {
+      cached = {};
+      appMapCache.set(config, cached);
+    }
+    const mode = forCommands ? 'commands' : 'display';
+    if (!cached[mode]) {
+      const appmap = new Map(baseAppMap);
+      handlehdmi(appmap, config, forCommands ? 4 : deviceAttributeQuery('hdmiInputs', config));
+      handlecustomlaunchers(appmap, config);
+      handleAVInputs(appmap, config, forCommands ? 1 : deviceAttributeQuery('avInputs', config));
+      handleTunerInputs(appmap, config, forCommands ? true : deviceAttributeQuery('tuner', config));
+      cached[mode] = appmap;
+    }
+    return cached[mode];
 }
 
 
@@ -204,8 +207,90 @@ class FiremoteCard extends LitElement {
     };
   }
 
+  shouldUpdate(changedProps) {
+    if (changedProps.has('_config') || !changedProps.has('hass')) return true;
+    const previous = changedProps.get('hass');
+    if (!previous || !this.hass || !this._config) return true;
+    if (previous.config?.language !== this.hass.config?.language) return true;
+    // The remote only displays state from these entities. Service handlers still
+    // read the latest hass even when an unrelated update does not render.
+    return [this._config.entity, this._config.android_tv_remote_entity]
+      .some(id => id && previous.states[id] !== this.hass.states[id]);
+  }
+
+  constructor() {
+    super();
+    this._scheduleViewportScale = () => {
+      if (!this.isConnected || this._scaleFrame) return;
+      this._scaleFrame = requestAnimationFrame(() => {
+        this._scaleFrame = undefined;
+        this._updateViewportScale();
+      });
+    };
+  }
+
+  get _viewportScaling() {
+    return ['viewport-height', 'viewport-width'].includes(this._config?.scale_mode);
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('resize', this._scheduleViewportScale);
+    // Lit may reuse its rendered DOM without an update after reconnection.
+    this.updateComplete.then(() => {
+      if (this.isConnected) this.updated();
+    });
+    this._scheduleViewportScale();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('resize', this._scheduleViewportScale);
+    this._scaleObserver?.disconnect();
+    this._scaleObserver = undefined;
+    this._scaleContent = undefined;
+    cancelAnimationFrame(this._scaleFrame);
+    this._scaleFrame = undefined;
+  }
+
+  updated() {
+    const content = this.renderRoot.querySelector('.viewport-scale-content');
+    if (content !== this._scaleContent) {
+      this._scaleObserver?.disconnect();
+      this._scaleContent = content;
+      if (content) {
+        this._scaleObserver = new ResizeObserver(this._scheduleViewportScale);
+        this._scaleObserver.observe(content);
+      }
+    }
+    if (content) this._scheduleViewportScale();
+  }
+
+  _updateViewportScale() {
+    const content = this._scaleContent;
+    if (!this._viewportScaling || !content) return;
+    // Measure the complete remote, including optional names and launcher rows.
+    // Computed dimensions exclude the transform, avoiding resize feedback loops.
+    const style = getComputedStyle(content);
+    const width = parseFloat(style.width);
+    const height = parseFloat(style.height);
+    const byHeight = this._config.scale_mode === 'viewport-height';
+    const viewport = byHeight ? window.innerHeight : window.innerWidth;
+    const percentage = parseFloat(this._config.scale) || 100;
+    const factor = viewport * percentage / 100 / (byHeight ? height : width);
+    if (!(width > 0 && height > 0 && factor > 0 && Number.isFinite(factor))) return;
+    this._scaledSize = { width: width * factor, height: height * factor };
+    content.style.transform = `scale(${factor})`;
+    const container = content.parentElement;
+    container.style.width = `${this._scaledSize.width}px`;
+    container.style.height = `${this._scaledSize.height}px`;
+  }
+
   // Sets a default card size (height) for masonry dashboard type
   getCardSize(){
+    if (this._viewportScaling && this._scaledSize) {
+      return calculateMasonryViewHeight(this._scaledSize.height, 100);
+    }
     // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card#sizing-in-masonry-view
     // TODO: This does not account for added app launcher rows
     var scale = this._config.scale || 100;
@@ -276,6 +361,12 @@ class FiremoteCard extends LitElement {
   }
   // Announces a default grid size for new experimental sections dashboard type
   getLayoutOptions() {
+    if (this._viewportScaling && this._scaledSize) {
+      return {
+        grid_rows: calculateLayoutCellHeight(this._scaledSize.height, 100),
+        grid_columns: calculateLayoutCellWidth(this._scaledSize.width, 100),
+      };
+    }
     // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card#sizing-in-sections-view
     // TODO: This does not account for added app launcher rows
     var scale = this._config.scale || 100;
@@ -459,10 +550,28 @@ class FiremoteCard extends LitElement {
     if (!config.entity) {
      throw new Error("entity must be defined. You need to define an Apple TV, Chromecast, Fire TV, NVIDIA Shield, onn., Roku, Xiaomi Mi, or any other media_player entity");
     }
+    if (config.scale_mode && !['fixed', 'viewport-height', 'viewport-width'].includes(config.scale_mode)) {
+      throw new Error('scale_mode must be fixed, viewport-height, or viewport-width');
+    }
+    this._scaledSize = undefined;
     this._config = config;
   }
 
   static styles = css`
+          .viewport-scale-container {
+            position: relative;
+            margin: auto;
+            overflow: clip;
+          }
+
+          .viewport-scale-content {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: max-content;
+            transform-origin: top left;
+          }
+
 
           ha-card {
             background: rgba(30,30,30,0);
@@ -3430,14 +3539,14 @@ class FiremoteCard extends LitElement {
     getOpenAppID() {
       if(this._config.device_family === 'none' || this._config.entity === 'none') { return; }
       else if(this._config.device_family == 'roku') {
-        return this.hass.states[this._config.entity].attributes.app_name;
+        return this.hass.states[this._config.entity]?.attributes.app_name;
       }
       else if(this._config.android_tv_remote_entity == '' || typeof this._config.android_tv_remote_entity == 'undefined' || this._config.device_family == 'amazon-fire' ) {
-        return this.hass.states[this._config.entity].attributes.app_id;
+        return this.hass.states[this._config.entity]?.attributes.app_id;
       }
       else {
-        if(this.getState().state == 'on') {
-          return this.hass.states[this._config.android_tv_remote_entity].attributes.current_activity;
+        if(this.getState()?.state == 'on') {
+          return this.hass.states[this._config.android_tv_remote_entity]?.attributes.current_activity;
         }
       }
     }
@@ -3454,6 +3563,16 @@ class FiremoteCard extends LitElement {
 
 
   render() {
+    const remote = this.renderRemote();
+    if (!this._viewportScaling) return remote;
+    return html`
+      <div class="viewport-scale-container">
+        <div class="viewport-scale-content">${remote}</div>
+      </div>
+    `;
+  }
+
+  renderRemote() {
     if (!this.hass || !this._config) {
       return html``;
     }
@@ -3467,7 +3586,7 @@ class FiremoteCard extends LitElement {
     const stateStr = state ? state.state : 'off';
     const appId = this.getOpenAppID();
     const deviceType = this._config.device_type;
-    const scale = (parseInt(this._config.scale) || 100)/100;
+    const scale = this._viewportScaling ? 1 : (parseInt(this._config.scale) || 100)/100;
     var launcherscaleoffset = 0;
     if (this._config.app_launcher_relative_size) { launcherscaleoffset = (parseInt(this._config.app_launcher_relative_size) || 100)/100 };
     const launcherscale = scale + launcherscaleoffset;
@@ -3565,8 +3684,8 @@ class FiremoteCard extends LitElement {
       return deviceAttributeQuery(deviceAttribute, confRef);
     }
 
-    // Rebuild AppMap - allow hdmi inputs where appropriate & add configured custom launchers from YAML
-    refreshAppMap(this._config, getDeviceAttribute('hdmiInputs'), getDeviceAttribute('avInputs'), getDeviceAttribute('tuner'));
+    // Reuse the catalog for this configuration, including inputs and custom launchers
+    const appmap = getAppMap(this._config);
 
     // get app button details from appmap json
     function getAppButtonData(config, configvalue, want) {
@@ -5795,8 +5914,8 @@ class FiremoteCard extends LitElement {
     var pressedTarget = clicked.target;
     var timer = null;
 
-    // Rebuild AppMap - allow hdmi inputs where appropriate & add configured custom launchers from YAML
-    refreshAppMap(this._config, 4, 1, true);
+    // Reuse the catalog for this configuration, including inputs and custom launchers
+    const appmap = getAppMap(this._config, true);
 
 
     // Function for buttons that need overrides because HA integration support is lacking
@@ -7962,47 +8081,44 @@ class FiremoteCardEditor extends LitElement {
     };
   }
 
-  // setConfig works the same way as for the card itself
-  setConfig(config) {
-    this._config = config;
+  shouldUpdate(changedProps) {
+    if (changedProps.has('_config') || !changedProps.has('hass')) return true;
+    const previous = changedProps.get('hass');
+    if (!previous || !this.hass) return true;
+    if (previous.config?.language !== this.hass.config?.language ||
+        previous.entities !== this.hass.entities) return true;
+    // Dropdowns need entity membership and friendly names, not playback state.
+    this._indexEntities();
+    return this._dropdownEntities.some(id =>
+      (Boolean(previous.states[id]) !== Boolean(this.hass.states[id]) ||
+       previous.states[id]?.attributes.friendly_name !== this.hass.states[id]?.attributes.friendly_name));
   }
 
-  // This function is called when the input element of the editor loses focus or is changed
+  setConfig(config) {
+    // Rendering must not mutate the config object owned by Home Assistant.
+    this._config = { ...config };
+  }
+
   configChanged(ev) {
-
-    const _config = Object.assign({}, this._config);
-    _config[ev.target.name.toString()] = ev.target.value;
-    this._config = _config;
-
-    if (ev.type == 'change') {
-      // If the Device Family changes, we need to blank the device type value, or
-      // if a boolean style checkbox value changes, special handling is required
-      switch(ev.target.id) {
-        case 'device_family':
-          this._config.device_type = null;
-          break;
-        case 'hideFramesCheckbox':
-          this._config.hide_button_group_frame = ev.target.checked;
-          break;
-        case 'useCustomSkinCheckbox':
-          this._config.useCustomSkin = ev.target.checked;
-          break;
-        case "showMediaControlsCheckbox":
-          this._config.show_media_controls = ev.target.checked;
-          break;
+    const target = ev.target;
+    const key = target.name;
+    if (!key) return;
+    const value = target.type === 'checkbox' ? target.checked : target.value;
+    if (this._config[key] === value) return;
+    const config = { ...this._config, [key]: value };
+    if (key === 'device_family') {
+      config.device_type = value === 'none' ? 'other' : null;
+      if (value === 'none') {
+        config.entity = 'none';
+        delete config.apple_tv_remote_entity;
+        delete config.android_tv_remote_entity;
       }
     }
-
-    // A config-changed event will tell lovelace we have made a change to the configuration
-    // this will make sure the changes are saved correctly later and will update the preview
-    const event = new CustomEvent("config-changed", {
-      detail: { config: _config },
-      bubbles: true,
-      composed: true,
-    });
-    this.dispatchEvent(event);
+    this._config = config;
+    this.dispatchEvent(new CustomEvent('config-changed', {
+      detail: { config }, bubbles: true, composed: true,
+    }));
   }
-
 
   translateToUsrLang(englishString) {
     const ha_language = this.hass.config.language;
@@ -8032,29 +8148,31 @@ class FiremoteCardEditor extends LitElement {
     );
   }
 
+  _indexEntities() {
+    if (!this._platformEntities || this._entityRegistry !== this.hass.entities) {
+      this._entityRegistry = this.hass.entities;
+      this._platformEntities = new Map();
+      this._dropdownEntities = [];
+      for (const [id, entry] of Object.entries(this.hass.entities || {})) {
+        if (!this._platformEntities.has(entry.platform)) this._platformEntities.set(entry.platform, []);
+        this._platformEntities.get(entry.platform).push(id);
+        if (id.startsWith('media_player.') || id.startsWith('remote.')) this._dropdownEntities.push(id);
+      }
+    }
+  }
+
   getEntitiesByPlatform(platformName) {
-    return Object.keys(this.hass.entities).filter(
-      (eid) => this.hass.entities[eid].platform === platformName
-    );
+    this._indexEntities();
+    return (this._platformEntities.get(platformName) || []).filter(id => this.hass.states[id]);
   }
 
   getMediaPlayerEntitiesByPlatform(platformName) {
-    var entities = Object.keys(this.hass.entities).filter(
-      (eid) => this.hass.entities[eid].platform === platformName
-    );
-    const re = /media_player/;
-    return entities.filter(a => re.exec(a));
+    return this.getEntitiesByPlatform(platformName).filter(id => id.startsWith('media_player.'));
   }
 
-
   getRemoteEntitiesByPlatform(platformName) {
-    //console.log(this.hass.entities);
-    var entities = Object.keys(this.hass.entities).filter(
-      (eid) => this.hass.entities[eid].platform === platformName
-    );
-    const re = /remote/;
-    const negreg = /Supports/i;
-    return this.removeMatching(entities.filter(a => re.exec(a)), negreg);
+    return this.getEntitiesByPlatform(platformName)
+      .filter(id => id.startsWith('remote.') && !/Supports/i.test(id));
   }
 
   getDeviceFamiliesDropdown(optionvalue){
@@ -8313,56 +8431,37 @@ class FiremoteCardEditor extends LitElement {
 
 
   getAppChoiceOptionMenus(remoteStyle) {
-    if(['none'].includes(this._config.device_family)) { return; }
-    var family = this._config.device_family;
-    if(appButtonMax[remoteStyle]) {
-      var appkeys = [];
-      for (var [key, value] of appmap.entries()) {
-        appkeys.push(key)
-      }
-      const optionsmap = new Map();
-      for(let i=1; i<=appButtonMax[remoteStyle]; i++) {
-        optionsmap.set(i, "app_launch_"+i);
-      }
-      var optionkeys = [];
-      for (var [key, value] of optionsmap.entries()) {
-        optionkeys.push(key)
-      }
-
-      return html `
-        <br>
-        ${optionkeys.map((optionnumber) => {
-          var blankOption = html `<option value=""> - - - - </option>`;
-          if(!(appmap.has(optionvalue))){
-            blankOption = html `<option value="" selected> - - - - </option>`;
-          }
-          var heading = this.translateToUsrLang('App Launch Button');
-          var optionvalue = this._config[optionsmap.get(optionnumber)];
-          return html `
-            ${heading} ${optionnumber}:
-            <select name="app_launch_${optionnumber}" id="app_launch_${optionnumber}" style="padding: .6em; font-size: 1em;"
-              .value=${optionvalue}
-              @focusout=${this.configChanged}
-              @change=${this.configChanged}
-            >
-              ${blankOption}
-              ${appkeys.map((app) => {
-               var userLanguageAppName = this.translateToUsrLang(appmap.get(app).friendlyName);
-               if ((appmap.get(app).deviceFamily && appmap.get(app).deviceFamily.includes(family)) || !(appmap.get(app).deviceFamily)) {
-                if (app != optionvalue) {
-                  return html`<option value="${app}">${userLanguageAppName}</option> `
-                }
-                else {
-                  return html`<option value="${app}" selected>${userLanguageAppName}</option> `
-                }
-               }
-              })}
-            </select>
-            <br>
-          `;
-        })}
-      `;
+    if (this._config.device_family === 'none' || !appButtonMax[remoteStyle]) return;
+    const appmap = getAppMap(this._config);
+    const family = this._config.device_family;
+    let count = appButtonMax[remoteStyle];
+    if (remoteStyle === 'AL1' || remoteStyle === 'AL2') {
+      // Show existing slots (including gaps) plus a spare instead of creating
+      // catalog-size squared option elements. Selecting the spare adds another.
+      const last = Object.keys(this._config).reduce((max, key) => {
+        const match = /^app_launch_(\d+)$/.exec(key);
+        return match && this._config[key] ? Math.max(max, Number(match[1])) : max;
+      }, 0);
+      count = Math.min(appmap.size, Math.max(6, last + 1));
     }
+    const apps = [...appmap].filter(([, app]) => !app.deviceFamily || app.deviceFamily.includes(family))
+      .map(([id, app]) => [id, this.translateToUsrLang(app.friendlyName)]);
+    const heading = this.translateToUsrLang('App Launch Button');
+    return html`
+      <br>
+      ${Array.from({ length: count }, (_, index) => {
+        const number = index + 1;
+        const value = this._config['app_launch_' + number] || '';
+        return html`
+          ${heading} ${number}:
+          <select name="app_launch_${number}" id="app_launch_${number}" style="padding: .6em; font-size: 1em;"
+            .value=${value} @change=${this.configChanged}>
+            <option value="" ?selected=${!appmap.has(value)}> - - - - </option>
+            ${apps.map(([id, name]) => html`<option value=${id} ?selected=${id === value}>${name}</option>`)}
+          </select><br>
+        `;
+      })}
+    `;
   }
 
   getALConfigOptions(remoteStyle){
@@ -8444,9 +8543,6 @@ class FiremoteCardEditor extends LitElement {
       return deviceAttributeQuery(deviceAttribute, confRef);
     }
 
-    // Rebuild AppMap - allow hdmi inputs where appropriate & add configured custom launchers from YAML
-    refreshAppMap(this._config, getDeviceAttribute('hdmiInputs'), getDeviceAttribute('avInputs'), getDeviceAttribute('tuner'));
-
     var deviceModelSelectorLabel = devicemap.get(this._config.device_family).meta.friendlyName + ' ' + this.translateToUsrLang('Device Model');
     if (this.hass.config.language == 'he') {
       deviceModelSelectorLabel =  this.translateToUsrLang('Device Model') + ' ' + devicemap.get(this._config.device_family).meta.friendlyName;
@@ -8476,7 +8572,16 @@ class FiremoteCardEditor extends LitElement {
         <hr>
 
         <br>
-        <label for="fader">${this.translateToUsrLang('Scale')}:&nbsp;
+        <label for="scale_mode">${this.translateToUsrLang('Scale mode')}:<br>
+          <select name="scale_mode" id="scale_mode" .value=${this._config.scale_mode || 'fixed'}
+            @change=${this.configChanged} style="padding: .6em; font-size: 1em;">
+            <option value="fixed">${this.translateToUsrLang('Fixed percentage')}</option>
+            <option value="viewport-height">${this.translateToUsrLang('Viewport height')}</option>
+            <option value="viewport-width">${this.translateToUsrLang('Viewport width')}</option>
+          </select>
+        </label>
+        <br><br>
+        <label for="scale">${this.translateToUsrLang('Scale')}:&nbsp;
           <input type="range" min="20" max="120" .value=${this._config.scale} id="scale" name="scale" @change=${this.configChanged} style="width: 40ch;">
         </label>
         <br>

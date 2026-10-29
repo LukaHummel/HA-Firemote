@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firemote performance regression tests</title>
+<pre id="results">Running…</pre>
+<script type="module">
+import '../dist/HA-Firemote.js';
+import { devices } from '../dist/supported-devices.js';
+
+const results = document.querySelector('#results');
+const assertions = [];
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+  assertions.push(message);
+}
+const state = (name, value = 'on') => ({ state: value, attributes: { friendly_name: name, app_id: 'com.netflix.ninja' } });
+const config = { entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'netflix' };
+const registry = { 'media_player.tv': { platform: 'androidtv' }, 'remote.tv': { platform: 'androidtv_remote' } };
+const hass = { config: { language: 'en' }, entities: registry,
+  states: { 'media_player.tv': state('TV'), 'remote.tv': state('Remote'), 'sensor.other': state('Sensor') } };
+async function mount(tag, conf = config, ha = hass) {
+  const element = document.createElement(tag);
+  element.hass = ha;
+  element.setConfig(conf);
+  let renders = 0;
+  const render = element.render;
+  element.render = function () { renders++; return render.call(this); };
+  element.renderCount = () => renders;
+  document.body.append(element);
+  await element.updateComplete;
+  return element;
+}
+try {
+  const card = await mount('firemote-card');
+  const editor = await mount('firemote-card-editor');
+  check(card.shadowRoot.querySelector('ha-card'), 'card mounts with real Lit rendering');
+  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'netflix', 'initial launcher selection is retained');
+  for (let i = 0; i < 100; i++) {
+    const next = { ...hass, states: { ...hass.states, 'sensor.other': state('Sensor', String(i)) } };
+    card.hass = next;
+    editor.hass = next;
+    await Promise.all([card.updateComplete, editor.updateComplete]);
+  }
+  check(card.renderCount() === 1 && editor.renderCount() === 1, 'unrelated HA updates do not render card or editor');
+  const playing = { ...hass, states: { ...hass.states, 'media_player.tv': state('TV', 'playing') } };
+  card.hass = playing;
+  editor.hass = playing;
+  await Promise.all([card.updateComplete, editor.updateComplete]);
+  check(card.renderCount() === 2 && editor.renderCount() === 1, 'playback updates render the card, not the editor');
+  editor.hass = { ...hass, states: { ...hass.states, 'media_player.tv': state('Renamed TV') } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#entity').textContent.includes('Renamed TV'), 'friendly name changes refresh entity choices');
+  let events = 0;
+  editor.addEventListener('config-changed', () => events++);
+  const select = editor.shadowRoot.querySelector('#app_launch_1');
+  select.dispatchEvent(new Event('change'));
+  select.dispatchEvent(new Event('focusout'));
+  check(events === 0, 'unchanged selections do not emit config-changed');
+  select.value = 'youtube';
+  select.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(events === 1 && editor._config.app_launch_1 === 'youtube', 'a changed selection emits once and updates config');
+  check(config.app_launch_1 === 'netflix', 'editing does not mutate the supplied config');
+  const name = editor.shadowRoot.querySelector('#visible_name_text');
+  name.value = 'Living room';
+  name.dispatchEvent(new Event('keyup'));
+  name.dispatchEvent(new Event('change'));
+  name.dispatchEvent(new Event('focusout'));
+  await editor.updateComplete;
+  check(events === 2, 'keyup, change and focusout emit only one change for the same text');
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL2' });
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelectorAll('select[name^="app_launch_"]').length === 6, 'launcher-only editor starts with six slots');
+  const spare = editor.shadowRoot.querySelector('#app_launch_6');
+  spare.value = 'netflix';
+  spare.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#app_launch_7'), 'selecting the final slot adds a spare');
+  check(editor.shadowRoot.querySelector('#app_launch_6').value === 'netflix', 'selection survives adding a slot');
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL1', app_launch_25: 'youtube' });
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#app_launch_25').value === 'youtube' && editor.shadowRoot.querySelector('#app_launch_26'), 'sparse existing slots are preserved with a spare');
+  editor.setConfig({ ...config, custom_launchers: [{ label: 'Cinema', script: 'cinema' }], app_launch_1: 'customlauncher Cinema' });
+  await editor.updateComplete;
+  const other = await mount('firemote-card-editor', { ...config, custom_launchers: [{ label: 'Music', script: 'music' }] });
+  check(other.shadowRoot.querySelector('option[value="customlauncher Music"]') && !other.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'launcher catalogs are isolated between editors');
+  editor.hass = { ...hass, config: { language: 'fr' } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'customlauncher Cinema', 'language update preserves custom launcher catalog and selection');
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'CC1' });
+  await editor.updateComplete;
+  const media = editor.shadowRoot.querySelector('#showMediaControlsCheckbox');
+  media.checked = true;
+  media.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(editor._config.show_media_controls === true, 'checkbox config remains boolean');
+  const family = editor.shadowRoot.querySelector('#device_family');
+  family.value = 'none';
+  family.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(editor._config.entity === 'none' && editor._config.device_type === 'other', 'button-only family is saved without render-time event side effects');
+  const associated = await mount('firemote-card', { ...config, device_family: 'chromecast', android_tv_remote_entity: 'remote.tv' });
+  const before = associated.renderCount();
+  associated.hass = { ...hass, states: { ...hass.states, 'remote.tv': state('Remote', 'off') } };
+  await associated.updateComplete;
+  check(associated.renderCount() === before + 1, 'associated remote updates are rendered');
+  associated.hass = { ...hass, states: { 'media_player.tv': hass.states['media_player.tv'] } };
+  await associated.updateComplete;
+  check(associated.shadowRoot.querySelector('ha-card'), 'missing associated remote does not break rendering');
+  editor.hass = { ...hass, states: {} };
+  editor.setConfig(config);
+  await editor.updateComplete;
+  check(!editor.shadowRoot.querySelector('#entity option[value="media_player.tv"]'), 'missing registry states are excluded safely');
+  const calls = [];
+  const launcherConfig = { ...config, app_launch_1: 'customlauncher Cinema', custom_launchers: [{ label: 'Cinema', script: 'cinema' }] };
+  const launcherCard = await mount('firemote-card', launcherConfig, { ...hass, callService: () => { throw new Error('stale hass'); } });
+  const otherCard = await mount('firemote-card', { ...launcherConfig, custom_launchers: [{ label: 'Cinema', script: 'other_cinema' }] }, { ...hass, callService: (...args) => calls.push(args) });
+  launcherCard.hass = { ...hass, callService: (...args) => calls.push(args) };
+  await launcherCard.updateComplete;
+  launcherCard.shadowRoot.getElementById('customlauncher Cinema-button').click();
+  otherCard.shadowRoot.getElementById('customlauncher Cinema-button').click();
+  check(launcherCard.renderCount() === 1 && calls[0]?.[1] === 'cinema' && calls[1]?.[1] === 'other_cinema', 'button actions use latest hass and isolated launcher catalogs without re-rendering');
+  launcherCard.setConfig({ ...launcherConfig, custom_launchers: [{ label: 'Cinema', script: 'updated_cinema' }] });
+  await launcherCard.updateComplete;
+  launcherCard.shadowRoot.getElementById('customlauncher Cinema-button').click();
+  check(calls[2]?.[1] === 'updated_cinema', 'config changes invalidate command catalogs');
+  editor.hass = { ...hass, entities: { ...registry, 'media_player.new_tv': { platform: 'androidtv' } },
+    states: { ...hass.states, 'media_player.new_tv': state('New TV') } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#entity option[value="media_player.new_tv"]'), 'registry changes refresh cached platform choices');
+  let models = 0;
+  for (const [family, data] of Object.entries(devices)) {
+    for (const [category, entries] of Object.entries(data)) {
+      if (category === 'meta') continue;
+      for (const [model, attrs] of Object.entries(entries)) {
+        if (!attrs.supported) continue;
+        card.setConfig({ ...config, device_family: family, device_type: model });
+        await card.updateComplete;
+        check(card.shadowRoot.querySelector('ha-card'), `device renders: ${model}`);
+        models++;
+      }
+    }
+  }
+  results.textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, models, checks: assertions }, null, 2);
+} catch (error) {
+  results.textContent = JSON.stringify({ status: 'failed', error: error.stack, checks: assertions }, null, 2);
+}
+</script>

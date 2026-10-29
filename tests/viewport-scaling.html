@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firemote viewport scaling regression tests</title>
+<pre id="results">Running…</pre>
+<script type="module">
+import '../dist/HA-Firemote.js';
+const assertions = [];
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+  assertions.push(message);
+}
+const config = { entity: 'none', device_family: 'amazon-fire', device_type: 'fire_tv_4_series' };
+const card = document.createElement('firemote-card');
+card.hass = { states: {}, entities: {}, config: { language: 'en' } };
+async function configure(options) {
+  card.setConfig({ ...config, ...options });
+  await card.updateComplete;
+  // Flush measurement synchronously so this also works in Chromium's virtual clock.
+  card._updateViewportScale();
+}
+function size() {
+  return card.shadowRoot.querySelector('.viewport-scale-container').getBoundingClientRect();
+}
+try {
+  card.setConfig(config);
+  document.body.append(card);
+  await card.updateComplete;
+  check(!card.shadowRoot.querySelector('.viewport-scale-container'), 'fixed scaling remains the default');
+  for (const style of ['AF1', 'AF6', 'AR1', 'CC1', 'NS2', 'AL1', 'AL2']) {
+    await configure({ scale_mode: 'viewport-height', scale: 90, defaultRemoteStyle_override: style,
+      app_launch_1: 'netflix', visible_name_text: 'Living room', name_position: 'top' });
+    check(Math.abs(size().height - innerHeight * 0.9) < 1, `${style} fills 90% of viewport height`);
+    const content = card._scaleContent;
+    const natural = getComputedStyle(content);
+    check(Math.abs(size().width / size().height - parseFloat(natural.width) / parseFloat(natural.height)) < 0.01,
+      `${style} preserves proportions`);
+    check(card.getCardSize() === Math.ceil(size().height / 50), `${style} reports scaled masonry height`);
+  }
+  await configure({ scale_mode: 'viewport-width', scale: 80 });
+  check(Math.abs(size().width - innerWidth * 0.8) < 1, 'width mode fills 80% of viewport width');
+  const previousHeight = size().height;
+  await configure({ scale_mode: 'viewport-width', scale: 80, app_launch_1: 'netflix', app_launch_5: 'youtube', app_launch_6: 'netflix' });
+  check(Math.abs(size().width - innerWidth * 0.8) < 1 && size().height > previousHeight,
+    'added launcher rows update the scaled layout');
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+  window.dispatchEvent(new Event('resize'));
+  check(card._scaleFrame !== undefined, 'viewport resize schedules a scale update');
+  card._updateViewportScale();
+  check(Math.abs(size().width - 480) < 1, 'resized viewport recomputes width');
+  await configure({ scale: 85, scale_mode: 'fixed' });
+  check(!card._scaleContent && !card.shadowRoot.querySelector('.viewport-scale-container'), 'switching to fixed removes scaling wrapper');
+  await configure({ scale_mode: 'viewport-height' });
+  check(Math.abs(size().height - innerHeight) < 1, 'omitted percentage defaults to 100');
+  card.remove();
+  check(!card._scaleObserver && card._scaleFrame === undefined, 'disconnect releases observer and animation frame');
+  document.body.append(card);
+  await card.updateComplete;
+  // Reconnection must observe the existing content even without a new Lit update.
+  card._updateViewportScale();
+  check(card._scaleContent !== undefined, 'reconnection restores scaling');
+  const editor = document.createElement('firemote-card-editor');
+  editor.hass = card.hass;
+  editor.setConfig(config);
+  document.body.append(editor);
+  await editor.updateComplete;
+  const selector = editor.shadowRoot.querySelector('#scale_mode');
+  check(selector.value === 'fixed', 'editor defaults to fixed mode');
+  let changed;
+  editor.addEventListener('config-changed', event => { changed = event.detail.config; });
+  selector.value = 'viewport-width';
+  selector.dispatchEvent(new Event('change'));
+  check(changed.scale_mode === 'viewport-width', 'editor saves viewport mode');
+  editor.remove();
+  card.remove();
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions });
+} catch (error) {
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'failed', error: error.stack, assertions });
+}
+</script>
