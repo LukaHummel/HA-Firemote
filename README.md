@@ -53,9 +53,10 @@ Choose apps for launcher slots in the card editor. Only selected apps appear on
 the remote, with their device icons when available. The dropdown contains only
 discovered apps, with no hardcoded or custom launcher options.
 
-Without the companion integration, dropdowns use the media player's `source_list`
-attribute. Depending on the integration, this can represent running apps or inputs
-rather than all installed apps, and may contain package IDs instead of names.
+Android / Fire TV launcher choices require the installed-app catalog sensor.
+The catalog is selected automatically from the card’s ADB media-player entity. Missing catalogs show a status message
+instead of the media player's raw running-process list. Apple TV and Roku use
+their integration-provided source lists.
 
 ## Introduction
 **Firemote** is a custom [Home Assistant](https://www.home-assistant.io/) card that is capable of controlling your media devices directly from any Home Assistant dashboard. The Firemote dashboard remotes are designed to look just like your physical remote controls, but they also contain TONS of customization options to choose from!

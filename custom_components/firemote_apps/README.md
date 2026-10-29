@@ -141,3 +141,26 @@ Assistant is needed.
 The replacement parser is checked in a clean Python 3.14 environment. Discovery,
 app display names, bitmap icons, and TV-banner fallback are retained. Metadata
 is re-extracted automatically once after the upgrade.
+
+## Catalog exists but the card lists system processes
+
+The card automatically selects the catalog belonging to its selected ADB
+media-player entity. Changing that entity switches the catalog, app names, and
+icons together. If using a different media-player integration for the same TV,
+a unique catalog on the same Home Assistant device can also match automatically.
+There is no separate catalog selector. Old `app_catalog_entity` overrides are
+ignored and removed when editing the card.
+
+If no catalog matches, configure Firemote and the card with the same ADB
+media-player entity. The editor reports the matched ADB entity and filter setting.
+Selected apps launch through the matched catalog's ADB entity.
+
+On Android / Fire TV, a missing catalog now produces a status message and empty
+launcher choices. The card no longer silently substitutes `source_list`, which
+can contain system processes and has no device-icon metadata. Roku and Apple TV
+continue using their integration-provided source lists.
+
+After updating, reload the dashboard and verify that its resource is
+`/firemote/frontend/HA-Firemote.js`, with any old HACS dashboard resource removed.
+Existing launcher selections made from the raw process list may need reselecting
+from the installed-app catalog.

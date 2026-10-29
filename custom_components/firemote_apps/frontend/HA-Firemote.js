@@ -25,8 +25,15 @@ const fireEvent = (node, type, detail, options) => {
 
 // A companion sensor associates its catalog with the configured ADB entity.
 function appCatalogState(hass, config) {
-  return Object.values(hass?.states || {}).find(state =>
-    state.attributes?.firemote_entity === config?.entity && Array.isArray(state.attributes.apps));
+  const states = hass?.states || {};
+  const valid = state => state && typeof state.attributes?.firemote_entity === 'string' && Array.isArray(state.attributes.apps);
+  const catalogs = Object.values(states).filter(valid);
+  const exact = catalogs.find(state => state.attributes.firemote_entity === config?.entity);
+  if (exact) return exact;
+  const deviceId = hass?.entities?.[config?.entity]?.device_id;
+  if (!deviceId) return;
+  const matches = catalogs.filter(state => hass.entities[state.attributes.firemote_entity]?.device_id === deviceId);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function deviceApps(hass, config) {
@@ -35,6 +42,7 @@ function deviceApps(hass, config) {
     if (['unavailable', 'unknown'].includes(catalog.state)) return [];
     return catalog.attributes.apps.filter(app => typeof app.id === 'string' && app.id && typeof app.name === 'string');
   }
+  if (!['apple-tv', 'roku'].includes(config?.device_family)) return null;
   const sources = hass?.states[config?.entity]?.attributes.source_list;
   return Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
     .map(source => ({ id: source, name: source })) : null;
@@ -3841,7 +3849,7 @@ class FiremoteCard extends LitElement {
           return html`<button class="srcButton ${[appId, e.hass.states[config.entity]?.attributes.source].includes(source) ? 'appActive' : ''}"
             title=${name} aria-label=${name} @click=${() => {
               fireEvent(e, 'haptic', 'light');
-              e.hass.callService('media_player', 'select_source', { entity_id: e._config.entity, source: app?.id || source });
+              e.hass.callService('media_player', 'select_source', { entity_id: appCatalogState(e.hass, e._config)?.attributes.firemote_entity || e._config.entity, source: app?.id || source });
             }}>${app?.icon ? html`<img class="deviceAppIcon" src=${e.hass.hassUrl ? e.hass.hassUrl(app.icon) : app.icon}
               alt="" @load=${event => { event.target.hidden = false; }} @error=${event => { event.target.hidden = true; }}>` : ''}<span>${name}</span></button>`;
         }
@@ -8149,6 +8157,7 @@ class FiremoteCardEditor extends LitElement {
     const value = target.type === 'checkbox' ? target.checked : target.value;
     if (this._config[key] === value) return;
     const config = { ...this._config, [key]: value };
+    delete config.app_catalog_entity;
     if (key === 'device_family') {
       config.device_type = value === 'none' ? 'other' : null;
       if (value === 'none') {
@@ -8485,12 +8494,19 @@ class FiremoteCardEditor extends LitElement {
       }, 0);
       count = Math.max(6, last + 1);
     }
+    const catalog = appCatalogState(this.hass, this._config);
     const discoveredApps = deviceApps(this.hass, this._config);
     const apps = (discoveredApps || []).map(app => ['source:' + encodeURIComponent(app.id), app.name]);
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
       <br>
-      ${discoveredApps === null ? html`<p>This device does not expose an app list. Install the Firemote Apps companion integration for installed apps, names, and icons.</p>` : ''}
+      ${!['apple-tv', 'roku'].includes(this._config.device_family) ? html`
+        <p role="status" class="appCatalogStatus">${!catalog
+          ? 'No installed-app catalog found for this TV. Add Firemote under Settings → Devices & services using the same ADB media player selected in this card. Raw running processes are not offered as apps.'
+          : ['unavailable', 'unknown'].includes(catalog.state)
+            ? 'The installed-app catalog is unavailable or still scanning. Check the Firemote integration and TV connection.'
+            : `Using ${catalog.attributes.firemote_entity}: ${catalog.attributes.apps.length} installed apps. System apps ${catalog.attributes.include_system_apps === true ? 'included' : 'excluded'}.`}</p>
+      ` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
         const saved = this._config['app_launch_' + number] || '';

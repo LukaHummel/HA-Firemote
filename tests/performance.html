@@ -16,7 +16,7 @@ const state = (name, value = 'on') => ({ state: value, attributes: { friendly_na
 const config = { entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'source:YouTube' };
 const registry = { 'media_player.tv': { platform: 'androidtv' }, 'remote.tv': { platform: 'androidtv_remote' } };
 const hass = { config: { language: 'en' }, entities: registry,
-  states: { 'media_player.tv': state('TV'), 'remote.tv': state('Remote'), 'sensor.other': state('Sensor') } };
+  states: { 'media_player.tv': state('TV'), 'remote.tv': state('Remote'), 'sensor.other': state('Sensor'), 'sensor.firemote_apps': { state: '2', attributes: { firemote_entity: config.entity, apps: [{ id: 'YouTube', name: 'YouTube' }, { id: 'SecondApp', name: 'SecondApp' }] } } } };
 async function mount(tag, conf = config, ha = hass) {
   const element = document.createElement(tag);
   element.hass = ha;
@@ -129,8 +129,8 @@ try {
   check(editor.shadowRoot.querySelector('#entity option[value="media_player.new_tv"]'), 'registry changes refresh cached platform choices');
   const discoveredHass = { ...hass, callService: (...args) => calls.push(args),
     states: { ...hass.states, 'media_player.tv': { ...state('TV'), attributes: {
-      source_list: ['Unknown & <App>', 'New app', 'New app', '', null]
-    } } } };
+      source_list: ['com.android.systemui']
+    } }, 'sensor.firemote_apps': { state: '2', attributes: { firemote_entity: config.entity, apps: [{ id: 'Unknown & <App>', name: 'Unknown & <App>' }, { id: 'New app', name: 'New app' }] } } } };
   const discoveredConfig = { ...config, app_launch_1: '', app_launch_2: 'netflix', custom_launchers: [{ label: 'Legacy', script: 'legacy' }] };
   const discovered = await mount('firemote-card', discoveredConfig, discoveredHass);
   const discoveredEditor = await mount('firemote-card-editor', discoveredConfig, discoveredHass);
@@ -149,7 +149,7 @@ try {
   selectedButton.click();
   check(calls.at(-1)[1] === 'select_source' && calls.at(-1)[2].source === 'Unknown & <App>', 'selected device app launches with its original source');
   discoveredEditor.hass = { ...discoveredHass, states: { ...hass.states,
-    'media_player.tv': { ...state('TV'), attributes: { source_list: ['Replacement'] } } } };
+    'media_player.tv': state('TV'), 'sensor.firemote_apps': { state: '1', attributes: { firemote_entity: config.entity, apps: [{ id: 'Replacement', name: 'Replacement' }] } } } };
   await discoveredEditor.updateComplete;
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').textContent.includes('Replacement'), 'app choices refresh when the device list changes');
   const catalogState = { state: '1', attributes: { firemote_entity: config.entity,
@@ -198,6 +198,41 @@ try {
     'sensor.firemote_apps': { ...catalogState, state: 'unavailable' } } };
   await discoveredEditor.updateComplete;
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'unavailable installed-app catalog does not substitute running apps');
+  const withoutCatalog = { ...catalogHass, states: { ...catalogHass.states } };
+  delete withoutCatalog.states['sensor.firemote_apps'];
+  discoveredEditor.hass = withoutCatalog;
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1 &&
+    discoveredEditor.shadowRoot.querySelector('.appCatalogStatus').textContent.includes('No installed-app catalog'), 'missing catalog reports the problem instead of offering system processes');
+  const alternateConfig = { ...discoveredConfig, entity: 'media_player.other_tv', app_launch_1: 'source:com.example.cinema', app_launch_2: '' };
+  const sameDeviceHass = { ...catalogHass, entities: { ...registry,
+    'media_player.tv': { ...registry['media_player.tv'], device_id: 'bedroom' },
+    'media_player.other_tv': { device_id: 'bedroom' } },
+    states: { ...catalogHass.states, 'media_player.other_tv': state('Same TV via another integration') } };
+  discoveredEditor.hass = sameDeviceHass;
+  discoveredEditor.setConfig(alternateConfig);
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options[1].textContent === 'Cinema Room', 'catalog automatically matches another media player on the same device');
+  discoveredEditor.hass = { ...sameDeviceHass, entities: registry };
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'catalog from an unrelated device is never selected implicitly');
+  discoveredEditor.setConfig({ ...alternateConfig, entity: 'media_player.tv', app_catalog_entity: 'sensor.nonexistent' });
+  await discoveredEditor.updateComplete;
+  check(!discoveredEditor.shadowRoot.querySelector('#app_catalog_entity') &&
+    discoveredEditor.shadowRoot.querySelector('#app_launch_1').options[1].textContent === 'Cinema Room', 'selected ADB entity automatically supplies its catalog without a separate selector or stale override');
+  const bedroomCatalog = { state: '1', attributes: { firemote_entity: 'media_player.other_tv',
+    apps: [{ id: 'com.example.bedroom', name: 'Bedroom app' }] } };
+  discoveredEditor.hass = { ...sameDeviceHass, states: { ...sameDeviceHass.states, 'sensor.bedroom_apps': bedroomCatalog } };
+  discoveredEditor.setConfig({ ...alternateConfig, app_catalog_entity: 'sensor.firemote_apps' });
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options[1].textContent === 'Bedroom app', 'changing the selected ADB entity switches to its exact catalog even when another catalog shares the device');
+  discovered.hass = sameDeviceHass;
+  discovered.setConfig(alternateConfig);
+  await discovered.updateComplete;
+  const alternateButton = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
+  check(alternateButton.querySelector('img'), 'automatic catalog supplies the device icon across media-player entities');
+  alternateButton.click();
+  check(calls.at(-1)[2].entity_id === 'media_player.tv', 'catalog apps launch through the automatically matched ADB entity');
   discovered.remove();
   discoveredEditor.remove();
   let models = 0;
