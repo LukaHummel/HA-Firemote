@@ -12,8 +12,8 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
   assertions.push(message);
 }
-const state = (name, value = 'on') => ({ state: value, attributes: { friendly_name: name, app_id: 'com.netflix.ninja', source_list: ['YouTube'] } });
-const config = { entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'netflix' };
+const state = (name, value = 'on') => ({ state: value, attributes: { friendly_name: name, app_id: 'com.netflix.ninja', source_list: ['YouTube', 'SecondApp'] } });
+const config = { entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'source:YouTube' };
 const registry = { 'media_player.tv': { platform: 'androidtv' }, 'remote.tv': { platform: 'androidtv_remote' } };
 const hass = { config: { language: 'en' }, entities: registry,
   states: { 'media_player.tv': state('TV'), 'remote.tv': state('Remote'), 'sensor.other': state('Sensor') } };
@@ -33,7 +33,7 @@ try {
   const card = await mount('firemote-card');
   const editor = await mount('firemote-card-editor');
   check(card.shadowRoot.querySelector('ha-card'), 'card mounts with real Lit rendering');
-  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'netflix', 'initial launcher selection is retained');
+  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'source:YouTube', 'initial launcher selection is retained');
   for (let i = 0; i < 100; i++) {
     const next = { ...hass, states: { ...hass.states, 'sensor.other': state('Sensor', String(i)) } };
     card.hass = next;
@@ -55,11 +55,11 @@ try {
   select.dispatchEvent(new Event('change'));
   select.dispatchEvent(new Event('focusout'));
   check(events === 0, 'unchanged selections do not emit config-changed');
-  select.value = 'source:YouTube';
+  select.value = 'source:SecondApp';
   select.dispatchEvent(new Event('change'));
   await editor.updateComplete;
-  check(events === 1 && editor._config.app_launch_1 === 'source:YouTube', 'a changed selection emits once and updates config');
-  check(config.app_launch_1 === 'netflix', 'editing does not mutate the supplied config');
+  check(events === 1 && editor._config.app_launch_1 === 'source:SecondApp', 'a changed selection emits once and updates config');
+  check(config.app_launch_1 === 'source:YouTube', 'editing does not mutate the supplied config');
   const name = editor.shadowRoot.querySelector('#visible_name_text');
   name.value = 'Living room';
   name.dispatchEvent(new Event('keyup'));
@@ -71,21 +71,21 @@ try {
   await editor.updateComplete;
   check(editor.shadowRoot.querySelectorAll('select[name^="app_launch_"]').length === 6, 'launcher-only editor starts with six slots');
   const spare = editor.shadowRoot.querySelector('#app_launch_6');
-  spare.value = 'netflix';
+  spare.value = 'source:YouTube';
   spare.dispatchEvent(new Event('change'));
   await editor.updateComplete;
   check(editor.shadowRoot.querySelector('#app_launch_7'), 'selecting the final slot adds a spare');
-  check(editor.shadowRoot.querySelector('#app_launch_6').value === 'netflix', 'selection survives adding a slot');
-  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL1', app_launch_25: 'youtube' });
+  check(editor.shadowRoot.querySelector('#app_launch_6').value === 'source:YouTube', 'selection survives adding a slot');
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL1', app_launch_25: 'source:YouTube' });
   await editor.updateComplete;
-  check(editor.shadowRoot.querySelector('#app_launch_25').value === 'youtube' && editor.shadowRoot.querySelector('#app_launch_26'), 'sparse existing slots are preserved with a spare');
+  check(editor.shadowRoot.querySelector('#app_launch_25').value === 'source:YouTube' && editor.shadowRoot.querySelector('#app_launch_26'), 'sparse existing slots are preserved with a spare');
   editor.setConfig({ ...config, custom_launchers: [{ label: 'Cinema', script: 'cinema' }], app_launch_1: 'customlauncher Cinema' });
   await editor.updateComplete;
   const other = await mount('firemote-card-editor', { ...config, custom_launchers: [{ label: 'Music', script: 'music' }] });
-  check(other.shadowRoot.querySelector('option[value="customlauncher Music"]') && !other.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'launcher catalogs are isolated between editors');
+  check(!other.shadowRoot.querySelector('option[value="customlauncher Music"]') && !editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'custom launchers are excluded from device app choices');
   editor.hass = { ...hass, config: { language: 'fr' } };
   await editor.updateComplete;
-  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'customlauncher Cinema', 'language update preserves custom launcher catalog and selection');
+  check(!editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'language updates do not reintroduce custom options');
   editor.setConfig({ ...config, defaultRemoteStyle_override: 'CC1' });
   await editor.updateComplete;
   const media = editor.shadowRoot.querySelector('#showMediaControlsCheckbox');
@@ -131,12 +131,13 @@ try {
     states: { ...hass.states, 'media_player.tv': { ...state('TV'), attributes: {
       source_list: ['Unknown & <App>', 'New app', 'New app', '', null]
     } } } };
-  const discoveredConfig = { ...config, app_launch_1: '' };
+  const discoveredConfig = { ...config, app_launch_1: '', app_launch_2: 'netflix', custom_launchers: [{ label: 'Legacy', script: 'legacy' }] };
   const discovered = await mount('firemote-card', discoveredConfig, discoveredHass);
   const discoveredEditor = await mount('firemote-card-editor', discoveredConfig, discoveredHass);
   const choices = discoveredEditor.shadowRoot.querySelector('#app_launch_1');
   check(choices.options.length === 3 && choices.options[1].textContent === 'Unknown & <App>', 'dropdown offers unique device apps with safely rendered labels');
-  check(!discovered.shadowRoot.querySelector('.srcButton:not(.hidden)'), 'discovered apps do not appear on the remote before selection');
+  check(![...discovered.shadowRoot.querySelectorAll('.srcButton')].some(button => button.textContent === 'Unknown & <App>'), 'discovered apps do not appear on the remote before selection');
+  check(!choices.querySelector('option[value="netflix"]') && !choices.querySelector('option[value="customlauncher Legacy"]'), 'saved hardcoded and custom options are excluded');
   check(!choices.querySelector('option[value="youtube"]'), 'static catalog is not offered in app choices');
   choices.value = 'source:' + encodeURIComponent('Unknown & <App>');
   choices.dispatchEvent(new Event('change'));

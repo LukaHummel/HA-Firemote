@@ -8437,8 +8437,6 @@ class FiremoteCardEditor extends LitElement {
 
   getAppChoiceOptionMenus(remoteStyle) {
     if (this._config.device_family === 'none' || !appButtonMax[remoteStyle]) return;
-    const appmap = getAppMap(this._config);
-    const family = this._config.device_family;
     let count = appButtonMax[remoteStyle];
     if (remoteStyle === 'AL1' || remoteStyle === 'AL2') {
       // Show existing slots (including gaps) plus a spare instead of creating
@@ -8452,13 +8450,6 @@ class FiremoteCardEditor extends LitElement {
     const sources = this.hass.states[this._config.entity]?.attributes.source_list;
     const apps = (Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))] : [])
       .map(source => ['source:' + encodeURIComponent(source), source]);
-    // Keep custom actions and saved catalog selections usable without offering the static catalog.
-    for (const [id, app] of appmap) {
-      if (id.startsWith('customlauncher ') || Object.keys(this._config).some(key =>
-          /^app_launch_\d+$/.test(key) && this._config[key] === id)) {
-        apps.push([id, this.translateToUsrLang(app.friendlyName)]);
-      }
-    }
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
       <br>

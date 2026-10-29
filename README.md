@@ -38,8 +38,9 @@ only selected apps appear on the remote. The choices update when the device list
 changes, and clicking a selected app calls `media_player.select_source`.
 
 The integration must expose `source_list`. Some integrations also list inputs,
-which will appear as choices. Custom launchers and previously saved catalog
-selections remain available. Apps are not automatically added to the remote.
+which will appear as choices. The dropdowns contain only device-reported sources;
+custom launchers and saved catalog entries are not added as options. Apps are not
+automatically added to the remote.
 
 ## Introduction
 **Firemote** is a custom [Home Assistant](https://www.home-assistant.io/) card that is capable of controlling your media devices directly from any Home Assistant dashboard. The Firemote dashboard remotes are designed to look just like your physical remote controls, but they also contain TONS of customization options to choose from!
