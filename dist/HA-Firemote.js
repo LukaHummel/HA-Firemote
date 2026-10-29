@@ -236,6 +236,7 @@ class FiremoteCard extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('resize', this._scheduleViewportScale);
+    window.visualViewport?.addEventListener('resize', this._scheduleViewportScale);
     // Lit may reuse its rendered DOM without an update after reconnection.
     this.updateComplete.then(() => {
       if (this.isConnected) this.updated();
@@ -246,9 +247,12 @@ class FiremoteCard extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('resize', this._scheduleViewportScale);
+    window.visualViewport?.removeEventListener('resize', this._scheduleViewportScale);
     this._scaleObserver?.disconnect();
     this._scaleObserver = undefined;
     this._scaleContent = undefined;
+    this._dashboardView = undefined;
+    this._dashboardHeader = undefined;
     cancelAnimationFrame(this._scaleFrame);
     this._scaleFrame = undefined;
   }
@@ -258,12 +262,50 @@ class FiremoteCard extends LitElement {
     if (content !== this._scaleContent) {
       this._scaleObserver?.disconnect();
       this._scaleContent = content;
+      this._dashboardView = undefined;
+      this._dashboardHeader = undefined;
       if (content) {
         this._scaleObserver = new ResizeObserver(this._scheduleViewportScale);
         this._scaleObserver.observe(content);
+        // Cross shadow roots to find this card's dashboard, not another view
+        // or a card-sized column whose dimensions depend on the scaled card.
+        let ancestor = this;
+        while (ancestor) {
+          if (ancestor.localName === 'hui-root') {
+            this._dashboardView = ancestor.shadowRoot?.querySelector('#view');
+            this._dashboardHeader = ancestor.shadowRoot?.querySelector('.header');
+            break;
+          }
+          ancestor = ancestor.parentElement || ancestor.getRootNode().host;
+        }
+        if (this._dashboardView) this._scaleObserver.observe(this._dashboardView);
+        if (this._dashboardHeader) this._scaleObserver.observe(this._dashboardHeader);
       }
     }
     if (content) this._scheduleViewportScale();
+  }
+
+  _visibleDashboardSize() {
+    const viewport = window.visualViewport;
+    const left = viewport?.offsetLeft || 0;
+    const top = viewport?.offsetTop || 0;
+    // innerWidth/Height remain useful fallbacks outside Home Assistant.
+    const right = left + Math.min(window.innerWidth, viewport?.width || window.innerWidth);
+    const bottom = top + Math.min(window.innerHeight, viewport?.height || window.innerHeight);
+    const view = this._dashboardView;
+    if (!view) return { width: right - left, height: bottom - top };
+    const bounds = view.getBoundingClientRect();
+    const style = getComputedStyle(view);
+    const padding = side => parseFloat(style[side]) || 0;
+    const headerBottom = this._dashboardHeader?.getBoundingClientRect().bottom || top;
+    return {
+      width: Math.max(0, Math.min(right, bounds.right - padding('paddingRight')) -
+        Math.max(left, bounds.left + padding('paddingLeft'))),
+      // View height can grow with the remote. Use the visible screen's bottom
+      // to avoid feeding the card's own height back into its scale calculation.
+      height: Math.max(0, bottom - Math.max(top, headerBottom,
+        bounds.top + padding('paddingTop')) - padding('paddingBottom')),
+    };
   }
 
   _updateViewportScale() {
@@ -275,7 +317,8 @@ class FiremoteCard extends LitElement {
     const width = parseFloat(style.width);
     const height = parseFloat(style.height);
     const byHeight = this._config.scale_mode === 'viewport-height';
-    const viewport = byHeight ? window.innerHeight : window.innerWidth;
+    const dashboard = this._visibleDashboardSize();
+    const viewport = byHeight ? dashboard.height : dashboard.width;
     const percentage = parseFloat(this._config.scale) || 100;
     const factor = viewport * percentage / 100 / (byHeight ? height : width);
     if (!(width > 0 && height > 0 && factor > 0 && Number.isFinite(factor))) return;
@@ -8582,7 +8625,9 @@ class FiremoteCardEditor extends LitElement {
         </label>
         <br><br>
         <label for="scale">${this.translateToUsrLang('Scale')}:&nbsp;
-          <input type="range" min="20" max="120" .value=${this._config.scale} id="scale" name="scale" @change=${this.configChanged} style="width: 40ch;">
+          <input type="number" min="1" step="1" required .value=${String(this._config.scale || 100)} id="scale" name="scale"
+            @change=${(ev) => { if (ev.target.validity.valid) this.configChanged(ev); }}
+            style="padding: .6em; font-size: 1em; width: 6em;">&nbsp;%
         </label>
         <br>
         ${appLauncherRelativeScaleSlide}

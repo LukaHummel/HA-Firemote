@@ -187,8 +187,8 @@ Options:
 |defaultRemoteStyle_override | string | no | AF1 <br> AF2 <br> AF3 <br> AF4 <br> AF5 <br> AF6 <br> AFJTV <br> AFXF2 <br> AR1 <br> AR2 <br> AR3 <br> CC1 <br> CC2 <br> CC3 <br> HO1 <br> HO2 <br> HO3 <br> HO4 <br> NS1 <br> NS2 <br> ON1 <br> ON2 <br> RVRP <br> RVR <br> RSR <br> RHR <br> RTR <br> RWR <br> XM1 <br> XM2 <br> AL1 <br> AL2 | Optionally select a style of remote different from the one that shipped with your device |
 | app_launch_1<br>app_launch_2<br>app_launch_3<br>app_launch_4<br>app_launch_5<br>etc... | string | no | [ See App Launch Button Customization section for options](#app-launch-button-customization) | Quick launch apps customization |
 |hdmi_1<br>hdmi_2<br>hdmi_3</br>hdmi_4| string | no | Personalized name for this HDMI input | The name entered here will appear on the button (truncated to 8 characters to fit) |
-| scale_mode  | string | no       | `fixed`, `viewport-height`, `viewport-width`                    | Scaling mode. Defaults to `fixed`, which uses the remote's original size. Viewport modes preserve proportions and resize automatically with the browser window. |
-| scale       | integer| no       | Any positive number                                           | Percentage of the original size in fixed mode, or of the selected viewport dimension in viewport mode. Defaults to 100. |
+| scale_mode  | string | no       | `fixed`, `viewport-height`, `viewport-width`                    | Scaling mode. Defaults to `fixed`, which uses the remote's original size. Viewport modes preserve proportions and resize automatically with the visible dashboard area. |
+| scale       | integer| no       | Any positive number                                           | Percentage of the original size in fixed mode, or of the selected visible dashboard dimension in viewport mode. Defaults to 100. |
 | custom_launchers | object | no | Create your own app launcher buttons        | Details are in the [Launcher Button Customizations](https://github.com/PRProd/HA-Firemote#launcher-button-customizations) of the [README.md](https://github.com/PRProd/HA-Firemote/blob/main/README.md) file |
 | button_overrides | object | no | Button name and HA script name are required.| Details are in the Button Overrides section of the [README.md](https://github.com/PRProd/HA-Firemote#button-overrides) file |
 | visible_name_text       | string | no      | Any text                                                         | Optional device label for your firemote |
@@ -216,7 +216,7 @@ scale_mode: viewport-height
 scale: 90
 ```
 
-This makes the complete card 90% of the browser viewport height, including launcher rows and the device name. Use `viewport-width` to scale to the viewport width instead. The other dimension scales proportionally and may extend beyond the viewport or dashboard column. Viewport sizing uses the full browser window; it does not subtract Home Assistant headers, sidebars, or other cards. Choose a smaller percentage to leave space for them.
+This makes the complete card 90% of the visible dashboard height, including launcher rows and the device name. Use `viewport-width` to scale to the visible dashboard width instead. Home Assistant headers, sidebar space, and dashboard container padding are excluded. The other dimension scales proportionally and may extend beyond the screen or dashboard column. Sizing uses the dashboard screen rather than an individual card column; choose a smaller percentage to leave space for other cards. Outside a dashboard, sizing falls back to the visible browser viewport.
 
 Omit `scale_mode` or use `fixed` to keep the existing percentage sizing.
 

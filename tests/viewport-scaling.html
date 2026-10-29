@@ -1,6 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>Firemote viewport scaling regression tests</title>
+<style>body { margin: 0; overflow: hidden; }</style>
 <pre id="results">Running…</pre>
 <script type="module">
 import '../dist/HA-Firemote.js';
@@ -42,6 +43,7 @@ try {
   await configure({ scale_mode: 'viewport-width', scale: 80, app_launch_1: 'netflix', app_launch_5: 'youtube', app_launch_6: 'netflix' });
   check(Math.abs(size().width - innerWidth * 0.8) < 1 && size().height > previousHeight,
     'added launcher rows update the scaled layout');
+  const originalWidth = Object.getOwnPropertyDescriptor(window, 'innerWidth');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
   window.dispatchEvent(new Event('resize'));
   check(card._scaleFrame !== undefined, 'viewport resize schedules a scale update');
@@ -58,6 +60,37 @@ try {
   // Reconnection must observe the existing content even without a new Lit update.
   card._updateViewportScale();
   check(card._scaleContent !== undefined, 'reconnection restores scaling');
+  // Simulate the HA dashboard shell across a shadow boundary. The view
+  // includes header padding and is offset by the open sidebar.
+  Object.defineProperty(window, 'innerWidth', originalWidth);
+  const dashboard = document.createElement('hui-root');
+  const dashboardRoot = dashboard.attachShadow({ mode: 'open' });
+  dashboardRoot.innerHTML = `
+    <div class="header" style="position:fixed;left:200px;right:0;top:0;height:64px"></div>
+    <div id="view" style="position:fixed;left:200px;right:0;top:0;bottom:0;
+      box-sizing:border-box;padding:64px 20px 16px 12px"></div>`;
+  document.body.append(dashboard);
+  dashboardRoot.querySelector('#view').append(card);
+  await card.updateComplete;
+  await configure({ scale_mode: 'viewport-height', scale: 100 });
+  check(Math.abs(size().height - (innerHeight - 80)) < 1,
+    'height excludes the dashboard header and bottom padding across shadow roots');
+  await configure({ scale_mode: 'viewport-width', scale: 100 });
+  check(Math.abs(size().width - (innerWidth - 232)) < 1,
+    'width excludes the open sidebar and dashboard horizontal padding');
+  dashboardRoot.querySelector('#view').style.left = '0px';
+  card._updateViewportScale();
+  check(Math.abs(size().width - (innerWidth - 32)) < 1,
+    'closing the sidebar expands the available dashboard width');
+  dashboardRoot.querySelector('.header').style.height = '96px';
+  dashboardRoot.querySelector('#view').style.paddingTop = '96px';
+  await configure({ scale_mode: 'viewport-height', scale: 90 });
+  check(Math.abs(size().height - (innerHeight - 112) * 0.9) < 1,
+    'header changes are included in percentage scaling');
+  const stableHeight = size().height;
+  for (let i = 0; i < 5; i++) card._updateViewportScale();
+  check(Math.abs(size().height - stableHeight) < 0.01,
+    'repeated dashboard measurements do not feed back into scaling');
   const editor = document.createElement('firemote-card-editor');
   editor.hass = card.hass;
   editor.setConfig(config);
@@ -72,6 +105,7 @@ try {
   check(changed.scale_mode === 'viewport-width', 'editor saves viewport mode');
   editor.remove();
   card.remove();
+  dashboard.remove();
   document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions });
 } catch (error) {
   document.querySelector('#results').textContent = JSON.stringify({ status: 'failed', error: error.stack, assertions });
