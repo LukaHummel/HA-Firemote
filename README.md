@@ -1,7 +1,7 @@
 # HA-Firemote
 
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/PRProd/HA-Firemote?style=for-the-badge)
 ![Maintenance](https://img.shields.io/maintenance/yes/2026?style=for-the-badge)
 
@@ -30,17 +30,31 @@ Need More Information?  Check out this project's [Wiki](https://github.com/PRPro
 <br>
 <br>
 
+## Install through HACS
+
+Add `https://github.com/LukaHummel/HA-Firemote` to HACS **Custom repositories**
+with type **Integration**, then download **Firemote**. This installs the backend
+and bundled dashboard card together. Follow the [setup instructions](custom_components/firemote_apps/README.md)
+for YAML configuration and the dashboard resource URL.
+
+If this fork was previously added as a Dashboard repository, remove that HACS
+entry and re-add it as Integration. Replace the old card resource with
+`/firemote/frontend/HA-Firemote.js` to avoid loading the card twice.
+
 ## App launcher choices
 
-App launcher dropdowns use the configured media player's Home Assistant
-`source_list` attribute. Choose an app for each launcher slot in the card editor;
-only selected apps appear on the remote. The choices update when the device list
-changes, and clicking a selected app calls `media_player.select_source`.
+For Android / Fire TV, install the [bundled Firemote integration and card](custom_components/firemote_apps/README.md)
+to discover installed launcher apps, resolve their display names, and cache icons
+from the device. System apps are excluded by default; set `include_system_apps: true` in the backend configuration to include them. The integration serves the included card at `/firemote/frontend/HA-Firemote.js`.
+The card automatically uses the catalog sensor associated with its media player.
 
-The integration must expose `source_list`. Some integrations also list inputs,
-which will appear as choices. The dropdowns contain only device-reported sources;
-custom launchers and saved catalog entries are not added as options. Apps are not
-automatically added to the remote.
+Choose apps for launcher slots in the card editor. Only selected apps appear on
+the remote, with their device icons when available. The dropdown contains only
+discovered apps, with no hardcoded or custom launcher options.
+
+Without the companion integration, dropdowns use the media player's `source_list`
+attribute. Depending on the integration, this can represent running apps or inputs
+rather than all installed apps, and may contain package IDs instead of names.
 
 ## Introduction
 **Firemote** is a custom [Home Assistant](https://www.home-assistant.io/) card that is capable of controlling your media devices directly from any Home Assistant dashboard. The Firemote dashboard remotes are designed to look just like your physical remote controls, but they also contain TONS of customization options to choose from!

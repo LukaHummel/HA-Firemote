@@ -3,7 +3,7 @@
 <title>Firemote performance regression tests</title>
 <pre id="results">Running…</pre>
 <script type="module">
-import '../dist/HA-Firemote.js';
+import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
 import { devices } from '../dist/supported-devices.js';
 
 const results = document.querySelector('#results');
@@ -152,6 +152,35 @@ try {
     'media_player.tv': { ...state('TV'), attributes: { source_list: ['Replacement'] } } } };
   await discoveredEditor.updateComplete;
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').textContent.includes('Replacement'), 'app choices refresh when the device list changes');
+  const catalogState = { state: '1', attributes: { firemote_entity: config.entity,
+    apps: [{ id: 'com.example.cinema', name: 'Cinema Room', icon: 'data:image/png;base64,iVBORw0KGgo=' }] } };
+  const catalogHass = { ...discoveredHass, states: { ...discoveredHass.states, 'sensor.firemote_apps': catalogState } };
+  discoveredEditor.hass = catalogHass;
+  await discoveredEditor.updateComplete;
+  const appSelect = discoveredEditor.shadowRoot.querySelector('#app_launch_1');
+  check(appSelect.options.length === 2 && appSelect.options[1].textContent === 'Cinema Room', 'companion catalog replaces raw sources with installed app display names');
+  appSelect.value = 'source:com.example.cinema';
+  appSelect.dispatchEvent(new Event('change'));
+  await discoveredEditor.updateComplete;
+  discovered.hass = catalogHass;
+  discovered.setConfig({ ...discoveredEditor._config, app_launch_2: '' });
+  await discovered.updateComplete;
+  const iconButton = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
+  check(iconButton.textContent === 'Cinema Room' && iconButton.querySelector('img'), 'selected app renders its resolved name and device icon');
+  iconButton.click();
+  check(calls.at(-1)[2].source === 'com.example.cinema', 'resolved names do not replace the package ID used for launching');
+  const updatedCatalogHass = { ...catalogHass, states: { ...catalogHass.states,
+    'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes,
+      apps: [{ id: 'com.example.cinema', name: 'Renamed Cinema' }] } } } };
+  discovered.hass = updatedCatalogHass;
+  discoveredEditor.hass = updatedCatalogHass;
+  await Promise.all([discovered.updateComplete, discoveredEditor.updateComplete]);
+  check(discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').textContent === 'Renamed Cinema' &&
+    discoveredEditor.shadowRoot.querySelector('#app_launch_1').selectedOptions[0].textContent === 'Renamed Cinema', 'sensor-only changes refresh names on both remote and editor');
+  discoveredEditor.hass = { ...catalogHass, states: { ...catalogHass.states,
+    'sensor.firemote_apps': { ...catalogState, state: 'unavailable' } } };
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'unavailable installed-app catalog does not substitute running apps');
   discovered.remove();
   discoveredEditor.remove();
   let models = 0;

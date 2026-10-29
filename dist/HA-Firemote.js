@@ -23,6 +23,23 @@ const fireEvent = (node, type, detail, options) => {
 }
 
 
+// A companion sensor associates its catalog with the configured ADB entity.
+function appCatalogState(hass, config) {
+  return Object.values(hass?.states || {}).find(state =>
+    state.attributes?.firemote_entity === config?.entity && Array.isArray(state.attributes.apps));
+}
+
+function deviceApps(hass, config) {
+  const catalog = appCatalogState(hass, config);
+  if (catalog) {
+    if (['unavailable', 'unknown'].includes(catalog.state)) return [];
+    return catalog.attributes.apps.filter(app => typeof app.id === 'string' && app.id && typeof app.name === 'string');
+  }
+  const sources = hass?.states[config?.entity]?.attributes.source_list;
+  return Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
+    .map(source => ({ id: source, name: source })) : null;
+}
+
 // Process the imported data
 const devicemap = new Map(Object.entries(devices));
 const baseAppMap = new Map(Object.entries(launcherData));
@@ -212,6 +229,7 @@ class FiremoteCard extends LitElement {
     const previous = changedProps.get('hass');
     if (!previous || !this.hass || !this._config) return true;
     if (previous.config?.language !== this.hass.config?.language) return true;
+    if (appCatalogState(previous, this._config) !== appCatalogState(this.hass, this._config)) return true;
     // The remote only displays state from these entities. Service handlers still
     // read the latest hass even when an unrelated update does not render.
     return [this._config.entity, this._config.android_tv_remote_entity]
@@ -2007,6 +2025,20 @@ class FiremoteCard extends LitElement {
               font-size: calc(var(--sz) * 1.45rem);
           }
 
+          .srcButton .deviceAppIcon {
+            width: calc(var(--sz) * 1.5rem);
+            height: calc(var(--sz) * 1.5rem);
+            object-fit: contain;
+          }
+          .srcButton:has(.deviceAppIcon) {
+            height: auto;
+            min-height: calc(var(--sz) * 2rem);
+          }
+          .srcButton span {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
           .srcButton {
             height: calc(var(--sz) * 2rem);
             width: calc(var(--sz) * 5.714rem);
@@ -3802,11 +3834,14 @@ class FiremoteCard extends LitElement {
         function sourceButton(val) {
           if (!val.startsWith('source:')) return;
           const source = decodeURIComponent(val.slice(7));
+          const app = deviceApps(e.hass, config)?.find(app => app.id === source);
+          const name = app?.name || source;
           return html`<button class="srcButton ${[appId, e.hass.states[config.entity]?.attributes.source].includes(source) ? 'appActive' : ''}"
-            title=${source} aria-label=${source} @click=${() => {
+            title=${name} aria-label=${name} @click=${() => {
               fireEvent(e, 'haptic', 'light');
               e.hass.callService('media_player', 'select_source', { entity_id: e._config.entity, source });
-            }}>${source}</button>`;
+            }}>${app?.icon ? html`<img class="deviceAppIcon" src=${e.hass.hassUrl ? e.hass.hassUrl(app.icon) : app.icon}
+              alt="" @error=${event => { event.target.hidden = true; }}>` : ''}<span>${name}</span></button>`;
         }
 
         // Return button HTML
@@ -8090,6 +8125,7 @@ class FiremoteCardEditor extends LitElement {
     if (!previous || !this.hass) return true;
     if (previous.config?.language !== this.hass.config?.language ||
         previous.entities !== this.hass.entities) return true;
+    if (appCatalogState(previous, this._config) !== appCatalogState(this.hass, this._config)) return true;
     if (JSON.stringify(previous.states[this._config?.entity]?.attributes.source_list) !==
         JSON.stringify(this.hass.states[this._config?.entity]?.attributes.source_list)) return true;
     // Dropdowns need entity membership and friendly names, not playback state.
@@ -8447,13 +8483,12 @@ class FiremoteCardEditor extends LitElement {
       }, 0);
       count = Math.max(6, last + 1);
     }
-    const sources = this.hass.states[this._config.entity]?.attributes.source_list;
-    const apps = (Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))] : [])
-      .map(source => ['source:' + encodeURIComponent(source), source]);
+    const discoveredApps = deviceApps(this.hass, this._config);
+    const apps = (discoveredApps || []).map(app => ['source:' + encodeURIComponent(app.id), app.name]);
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
       <br>
-      ${!Array.isArray(sources) ? html`<p>This device does not expose an app list.</p>` : ''}
+      ${discoveredApps === null ? html`<p>This device does not expose an app list. Install the Firemote Apps companion integration for installed apps, names, and icons.</p>` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
         const value = this._config['app_launch_' + number] || '';
