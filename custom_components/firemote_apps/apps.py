@@ -34,8 +34,8 @@ def launcher_list(output):
 
 def extract_metadata(apk_path, package, icon_path):
     """Decode resources off the event loop; publish only normalized PNG images."""
-    from androguard.core.apk import APK
     from PIL import Image
+    from pyaxmlparser import APK
 
     apk = APK(str(apk_path))
     name = apk.get_app_name() or package
@@ -182,7 +182,7 @@ class AppCatalog:
                 apps.append(app)
                 continue
             fingerprint = sha256(
-                ("metadata-v2\n" + package + "\n" + "\n".join(paths)).encode()
+                ("metadata-v3\n" + package + "\n" + "\n".join(paths)).encode()
             ).hexdigest()
             icon_file = fingerprint + ".png"
             icon_path = self.icon_dir / icon_file

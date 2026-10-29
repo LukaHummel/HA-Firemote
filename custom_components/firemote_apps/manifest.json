@@ -1,14 +1,14 @@
 {
   "domain": "firemote_apps",
   "name": "Firemote",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "documentation": "https://github.com/LukaHummel/HA-Firemote",
   "dependencies": [
     "androidtv",
     "http"
   ],
   "requirements": [
-    "androguard==4.1.3"
+    "pyaxmlparser==0.3.31"
   ],
   "codeowners": [
     "@LukaHummel"

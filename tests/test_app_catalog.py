@@ -214,7 +214,7 @@ class ExtractionTests(unittest.TestCase):
             patch.dict(
                 sys.modules,
                 {
-                    "androguard.core.apk": SimpleNamespace(APK=APK),
+                    "pyaxmlparser": SimpleNamespace(APK=APK),
                     "PIL": SimpleNamespace(Image=Image),
                 },
             ),

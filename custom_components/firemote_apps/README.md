@@ -128,3 +128,16 @@ If a button still shows only text, inspect the matching catalog sensor in
 A missing `icon` field means no usable bitmap was extracted. A failed image URL
 means an image-serving problem. Check Home Assistant logs for extraction failures;
 vector-only icons and resources held only in split APKs still fall back to text.
+
+## Setup flow fails with RequirementsNotFound
+
+Version 0.2.1 replaces `androguard==4.1.3` with the lightweight APK resource parser
+`pyaxmlparser==0.3.31`. The former dependency could prevent Home Assistant from
+loading the setup flow at all. Upgrade the integration through HACS and restart
+Home Assistant before adding Firemote again; a dashboard refresh alone does not
+reload the backend manifest. No manual package installation inside Home
+Assistant is needed.
+
+The replacement parser is checked in a clean Python 3.14 environment. Discovery,
+app display names, bitmap icons, and TV-banner fallback are retained. Metadata
+is re-extracted automatically once after the upgrade.

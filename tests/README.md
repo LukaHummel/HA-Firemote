@@ -35,3 +35,8 @@ managers, covering ADB-only choices, system-app defaults, duplicate prevention,
 YAML import, per-TV options, setup retries, platform forwarding and removal.
 The dependency-free suite skips these tests; CI runs them separately with Home
 Assistant installed. They do not connect to a TV.
+
+CI also installs the integration manifest's actual runtime requirements in a clean
+Python 3.14 environment using binary distributions only, then imports the APK
+parser and runs the catalog tests. This catches packaging failures that unit
+mocks and an older Home Assistant test environment cannot detect.
