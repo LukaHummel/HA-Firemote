@@ -216,7 +216,7 @@ scale_mode: viewport-height
 scale: 90
 ```
 
-This makes the complete card 90% of the visible dashboard height, including launcher rows and the device name. Use `viewport-width` to scale to the visible dashboard width instead. Home Assistant headers, sidebar space, and dashboard container padding are excluded. The other dimension scales proportionally and may extend beyond the screen or dashboard column. Sizing uses the dashboard screen rather than an individual card column; choose a smaller percentage to leave space for other cards. Outside a dashboard, sizing falls back to the visible browser viewport.
+This makes the complete card 90% of the visible dashboard height, including launcher rows and the device name. Use `viewport-width` to scale to the visible dashboard width instead. Home Assistant headers, sidebar space, and dashboard container padding are excluded. The other dimension scales proportionally and may extend beyond the screen or dashboard column. Sizing uses the dashboard screen rather than an individual card column; choose a smaller percentage to leave space for other cards. In viewport modes, the card is centered horizontally within its dashboard column and vertically within the visible dashboard height. Cards larger than the available space align to the start so their controls remain reachable. Outside a dashboard, sizing falls back to the visible browser viewport.
 
 Omit `scale_mode` or use `fixed` to keep the existing percentage sizing.
 

@@ -327,12 +327,14 @@ class FiremoteCard extends LitElement {
     const container = content.parentElement;
     container.style.width = `${this._scaledSize.width}px`;
     container.style.height = `${this._scaledSize.height}px`;
+    container.parentElement.style.minHeight = `${dashboard.height}px`;
+    this._scaleLayoutHeight = Math.max(dashboard.height, this._scaledSize.height);
   }
 
   // Sets a default card size (height) for masonry dashboard type
   getCardSize(){
     if (this._viewportScaling && this._scaledSize) {
-      return calculateMasonryViewHeight(this._scaledSize.height, 100);
+      return calculateMasonryViewHeight(this._scaleLayoutHeight, 100);
     }
     // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card#sizing-in-masonry-view
     // TODO: This does not account for added app launcher rows
@@ -406,7 +408,7 @@ class FiremoteCard extends LitElement {
   getLayoutOptions() {
     if (this._viewportScaling && this._scaledSize) {
       return {
-        grid_rows: calculateLayoutCellHeight(this._scaledSize.height, 100),
+        grid_rows: calculateLayoutCellHeight(this._scaleLayoutHeight, 100),
         grid_columns: calculateLayoutCellWidth(this._scaledSize.width, 100),
       };
     }
@@ -601,7 +603,17 @@ class FiremoteCard extends LitElement {
   }
 
   static styles = css`
+          :host {
+            display: block;
+          }
+
+          .viewport-scale-frame {
+            display: flex;
+            width: 100%;
+          }
+
           .viewport-scale-container {
+            flex-shrink: 0;
             position: relative;
             margin: auto;
             overflow: clip;
@@ -3609,8 +3621,10 @@ class FiremoteCard extends LitElement {
     const remote = this.renderRemote();
     if (!this._viewportScaling) return remote;
     return html`
-      <div class="viewport-scale-container">
-        <div class="viewport-scale-content">${remote}</div>
+      <div class="viewport-scale-frame">
+        <div class="viewport-scale-container">
+          <div class="viewport-scale-content">${remote}</div>
+        </div>
       </div>
     `;
   }

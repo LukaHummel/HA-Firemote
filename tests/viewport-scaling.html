@@ -35,7 +35,7 @@ try {
     const natural = getComputedStyle(content);
     check(Math.abs(size().width / size().height - parseFloat(natural.width) / parseFloat(natural.height)) < 0.01,
       `${style} preserves proportions`);
-    check(card.getCardSize() === Math.ceil(size().height / 50), `${style} reports scaled masonry height`);
+    check(card.getCardSize() === Math.ceil(Math.max(innerHeight, size().height) / 50), `${style} reports centered layout masonry height`);
   }
   await configure({ scale_mode: 'viewport-width', scale: 80 });
   check(Math.abs(size().width - innerWidth * 0.8) < 1, 'width mode fills 80% of viewport width');
@@ -87,6 +87,23 @@ try {
   await configure({ scale_mode: 'viewport-height', scale: 90 });
   check(Math.abs(size().height - (innerHeight - 112) * 0.9) < 1,
     'header changes are included in percentage scaling');
+  function checkCentered(message) {
+    const frame = card.shadowRoot.querySelector('.viewport-scale-frame').getBoundingClientRect();
+    const remote = size();
+    check(Math.abs(remote.left + remote.width / 2 - (frame.left + frame.width / 2)) < 1 &&
+      Math.abs(remote.top + remote.height / 2 - (frame.top + frame.height / 2)) < 1, message);
+  }
+  checkCentered('height-scaled remote is centered horizontally and vertically');
+  check(Math.abs(size().top - (96 + (innerHeight - 112) * 0.05)) < 1,
+    'vertical centering leaves equal space below the header and above bottom padding');
+  await configure({ scale_mode: 'viewport-width', scale: 10 });
+  checkCentered('width-scaled remote is centered horizontally and vertically');
+  const viewBounds = dashboardRoot.querySelector('#view').getBoundingClientRect();
+  check(Math.abs(size().left + size().width / 2 - (viewBounds.left + 12 + (viewBounds.width - 32) / 2)) < 1,
+    'horizontal centering respects dashboard padding');
+  await configure({ scale_mode: 'viewport-height', scale: 150 });
+  check(size().top >= 96, 'oversized cards remain reachable below the header');
+  check(card.getCardSize() === Math.ceil(size().height / 50), 'oversized cards report their full layout height');
   const stableHeight = size().height;
   for (let i = 0; i < 5; i++) card._updateViewportScale();
   check(Math.abs(size().height - stableHeight) < 0.01,
