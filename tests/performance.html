@@ -30,6 +30,35 @@ async function mount(tag, conf = config, ha = hass) {
   return element;
 }
 try {
+  const styleEditor = await mount('firemote-card-editor', { ...config, defaultRemoteStyle_override: 'AL1' });
+  const styleMenu = styleEditor.shadowRoot.querySelector('.remoteStyleMenu');
+  const styleSelect = styleMenu.querySelector('select');
+  const styleSummary = styleMenu.querySelector('summary');
+  check(styleSelect.value === 'AL1' && styleSummary.textContent.includes('App Launcher'), 'saved remote style is selected and labelled on first render');
+  check(styleSelect.options.length === 33 && styleSelect.size === 8, 'all remote styles remain available in a bounded native listbox');
+  styleMenu.open = true;
+  check(styleSelect.getBoundingClientRect().height <= Math.min(256, innerHeight * .4) + 1, 'open style list stays within its viewport height limit');
+  check(styleSelect.scrollHeight > styleSelect.clientHeight, 'remote styles scroll within the list');
+  let styleEvents = 0;
+  styleEditor.addEventListener('config-changed', () => styleEvents++);
+  styleSelect.value = 'AF2';
+  styleSelect.dispatchEvent(new Event('change'));
+  await styleEditor.updateComplete;
+  check(styleEvents === 1 && styleEditor._config.defaultRemoteStyle_override === 'AF2', 'selecting a remote style updates config once');
+  check(styleSummary.textContent.includes('Amazon Fire'), 'style label updates after selection');
+  styleSelect.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  check(!styleMenu.open && styleEditor.shadowRoot.activeElement === styleSummary, 'Enter closes style list and restores focus');
+  styleMenu.open = true;
+  styleSelect.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check(!styleMenu.open, 'Escape closes the style list');
+  styleMenu.open = true;
+  styleSelect.value = '';
+  styleSelect.dispatchEvent(new Event('change'));
+  await styleEditor.updateComplete;
+  check(styleEditor._config.defaultRemoteStyle_override === '' && styleSummary.textContent.includes('Default for'), 'device default can be restored');
+  styleSelect.options[0].dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true }));
+  check(!styleMenu.open, 'pointer selection closes the style list');
+  styleEditor.remove();
   const card = await mount('firemote-card');
   const editor = await mount('firemote-card-editor');
   check(card.shadowRoot.querySelector('ha-card'), 'card mounts with real Lit rendering');
@@ -166,13 +195,19 @@ try {
   discovered.setConfig({ ...discoveredEditor._config, app_launch_2: '' });
   await discovered.updateComplete;
   const iconButton = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
-  check(iconButton.textContent === 'Cinema Room' && iconButton.querySelector('img'), 'selected app renders its resolved name and device icon');
+  check(iconButton.title === 'Cinema Room' && iconButton.getAttribute('aria-label') === 'Cinema Room' && iconButton.querySelector('img'), 'icon button preserves its app name as tooltip and accessible label');
   const loadedIcon = iconButton.querySelector('img');
   if (!loadedIcon.complete) await new Promise(resolve => {
     loadedIcon.addEventListener('load', resolve, { once: true });
     loadedIcon.addEventListener('error', resolve, { once: true });
   });
   check(loadedIcon.naturalWidth > 0 && !loadedIcon.hidden, 'device icon actually decodes and remains visible');
+  const appNameLabel = iconButton.querySelector('.deviceAppName');
+  check(getComputedStyle(appNameLabel).display === 'none', 'rendered app button shows only the icon');
+  loadedIcon.dispatchEvent(new Event('error'));
+  check(loadedIcon.hidden && getComputedStyle(appNameLabel).display !== 'none', 'failed icon falls back to the app name');
+  loadedIcon.dispatchEvent(new Event('load'));
+  check(!loadedIcon.hidden && getComputedStyle(appNameLabel).display === 'none', 'recovered icon hides the fallback name again');
   iconButton.click();
   check(calls.at(-1)[2].source === 'com.example.cinema', 'resolved names do not replace the package ID used for launching');
   discovered.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:Cinema%20Room', app_launch_2: '' });

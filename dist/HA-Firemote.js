@@ -2038,9 +2038,8 @@ class FiremoteCard extends LitElement {
             height: calc(var(--sz) * 1.5rem);
             object-fit: contain;
           }
-          .srcButton:has(.deviceAppIcon) {
-            height: auto;
-            min-height: calc(var(--sz) * 2rem);
+          .deviceAppIcon:not([hidden]) + .deviceAppName {
+            display: none;
           }
           .srcButton span {
             max-width: 100%;
@@ -3851,7 +3850,7 @@ class FiremoteCard extends LitElement {
               fireEvent(e, 'haptic', 'light');
               e.hass.callService('media_player', 'select_source', { entity_id: appCatalogState(e.hass, e._config)?.attributes.firemote_entity || e._config.entity, source: app?.id || source });
             }}>${app?.icon ? html`<img class="deviceAppIcon" src=${e.hass.hassUrl ? e.hass.hassUrl(app.icon) : app.icon}
-              alt="" @load=${event => { event.target.hidden = false; }} @error=${event => { event.target.hidden = true; }}>` : ''}<span>${name}</span></button>`;
+              alt="" @load=${event => { event.target.hidden = false; }} @error=${event => { event.target.hidden = true; }}>` : ''}<span class="deviceAppName">${name}</span></button>`;
         }
 
         // Return button HTML
@@ -8122,6 +8121,33 @@ window.customCards.push({
 // Ceate and register the card editor
 class FiremoteCardEditor extends LitElement {
 
+  static get styles() {
+    return css`
+      .remoteStyleMenu { width: 100%; max-width: 26rem; }
+      .remoteStyleMenu summary {
+        box-sizing: border-box;
+        padding: .6em;
+        border: 1px solid var(--divider-color, #777);
+        border-radius: 4px;
+        background: var(--secondary-background-color, #333);
+        color: var(--primary-text-color, inherit);
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      .remoteStyleMenu select {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        height: min(16rem, 40vh);
+        margin-top: 4px;
+        font: inherit;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #111);
+      }
+      .remoteStyleMenu option { padding: .5em .75em; }
+    `;
+  }
+
   static get properties() {
     return {
       hass: {},
@@ -8448,6 +8474,74 @@ class FiremoteCardEditor extends LitElement {
   }
 
 
+  getRemoteStyleDropdown(deviceName) {
+    const options = [
+      { value: '', label: `${this.translateToUsrLang('Default for')} ${deviceName}` },
+      { value: 'AF1', label: `Amazon Fire ${this.translateToUsrLang('style')} 1` },
+      { value: 'AF2', label: `Amazon Fire ${this.translateToUsrLang('style')} 2` },
+      { value: 'AF3', label: `Amazon Fire ${this.translateToUsrLang('style')} 3` },
+      { value: 'AF4', label: `Amazon Fire ${this.translateToUsrLang('style')} 4` },
+      { value: 'AF5', label: `Amazon Fire ${this.translateToUsrLang('style')} 5` },
+      { value: 'AF6', label: `Amazon Fire ${this.translateToUsrLang('style')} 6` },
+      { value: 'AFJTV', label: `Amazon Fire JVC TV` },
+      { value: 'AFXF2', label: `Amazon Fire Xiaomi F2` },
+      { value: 'AR1', label: `Apple TV ${this.translateToUsrLang('remote style')} 1` },
+      { value: 'AR2', label: `Apple TV ${this.translateToUsrLang('remote style')} 2` },
+      { value: 'AR3', label: `Apple TV ${this.translateToUsrLang('remote style')} 3` },
+      { value: 'CC1', label: `Chromecast (snow)` },
+      { value: 'CC2', label: `Chromecast (sky)` },
+      { value: 'CC3', label: `Chromecast (sunrise)` },
+      { value: 'HO1', label: `Homatics ${this.translateToUsrLang('style')} 1` },
+      { value: 'HO2', label: `Homatics ${this.translateToUsrLang('style')} 2` },
+      { value: 'HO3', label: `Homatics ${this.translateToUsrLang('style')} 3` },
+      { value: 'HO4', label: `Homatics ${this.translateToUsrLang('style')} 4` },
+      { value: 'NS1', label: `NVIDIA Shield ${this.translateToUsrLang('style')} 1` },
+      { value: 'NS2', label: `NVIDIA Shield ${this.translateToUsrLang('style')} 2` },
+      { value: 'ON1', label: `onn. ${this.translateToUsrLang('style')} 1` },
+      { value: 'ON2', label: `onn. ${this.translateToUsrLang('style')} 2` },
+      { value: 'RVRP', label: `Roku Voice ${this.translateToUsrLang('remote')} Pro` },
+      { value: 'RVR', label: `Roku Voice ${this.translateToUsrLang('remote')}` },
+      { value: 'RSR', label: `Roku Simple ${this.translateToUsrLang('remote')}` },
+      { value: 'RHR', label: `Hisense Roku TV ${this.translateToUsrLang('remote')}` },
+      { value: 'RTR', label: `TCL Roku TV ${this.translateToUsrLang('remote')}` },
+      { value: 'RWR', label: `Westinghouse Roku TV ${this.translateToUsrLang('remote')}` },
+      { value: 'XM1', label: `Xiaomi Mi ${this.translateToUsrLang('style')} 1` },
+      { value: 'XM2', label: `Xiaomi Mi ${this.translateToUsrLang('style')} 2` },
+      { value: 'AL1', label: `${this.translateToUsrLang('App Launcher')} 1` },
+      { value: 'AL2', label: `${this.translateToUsrLang('App Launcher')} 2` },
+    ];
+    const value = this._config.defaultRemoteStyle_override || '';
+    const selected = options.find(option => option.value === value) || options[0];
+    const close = () => {
+      const menu = this.shadowRoot.querySelector('.remoteStyleMenu');
+      menu.open = false;
+      menu.querySelector('summary').focus();
+    };
+    // Keep the choices in the editor's scroll flow. A native popup ignores CSS
+    // height limits and can extend beyond Home Assistant's configuration dialog.
+    return html`
+      <details class="remoteStyleMenu"
+        @focusout=${ev => {
+          if (!ev.currentTarget.contains(ev.relatedTarget)) ev.currentTarget.open = false;
+        }}
+        @keydown=${ev => {
+          if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
+        }}>
+        <summary id="remoteStyleLabel">${this.translateToUsrLang('Remote Style')}: ${selected.label}</summary>
+        <select name="defaultRemoteStyle_override" id="defaultRemoteStyle_override"
+          aria-labelledby="remoteStyleLabel" size="8" .value=${value}
+          @change=${this.configChanged}
+          @click=${ev => { if (ev.target.tagName === 'OPTION') close(); }}
+          @keydown=${ev => {
+            if (ev.key === 'Enter') { ev.preventDefault(); close(); }
+          }}>
+          ${options.map(option => html`<option value=${option.value}
+            ?selected=${option.value === value}>${option.label}</option>`)}
+        </select>
+      </details>
+    `;
+  }
+
   getCompatibilityModeDropdown(optionValue, deviceFriendlyName){
     if(['apple-tv', 'chromecast', 'homatics', 'nvidia-shield', 'onn', 'roku', 'none'].includes(this._config.device_family)) { return; }
     if(['xiaomi-tv-stick-4k', 'fire_tv_stick_4k_max_second_gen', 'fire_tv_stick_4k_second_gen'].includes(this._config.device_type)) { return; }
@@ -8650,46 +8744,7 @@ class FiremoteCardEditor extends LitElement {
         ${appLauncherRelativeScaleSlide}
 
         <br>
-        ${this.translateToUsrLang('Remote Style')}:<br>
-        <select name="defaultRemoteStyle_override" id="defaultRemoteStyle_override" style="padding: .6em; font-size: 1em;"
-          .value=${this._config.defaultRemoteStyle_override || ''}
-          @focusout=${this.configChanged}
-          @change=${this.configChanged}
-        >
-          <option value="">${this.translateToUsrLang('Default for')} ${getDeviceAttribute('friendlyName')}</option>
-          <option value="AF1">Amazon Fire ${this.translateToUsrLang('style')} 1</option>
-          <option value="AF2">Amazon Fire ${this.translateToUsrLang('style')} 2</option>
-          <option value="AF3">Amazon Fire ${this.translateToUsrLang('style')} 3</option>
-          <option value="AF4">Amazon Fire ${this.translateToUsrLang('style')} 4</option>
-          <option value="AF5">Amazon Fire ${this.translateToUsrLang('style')} 5</option>
-          <option value="AF6">Amazon Fire ${this.translateToUsrLang('style')} 6</option>
-          <option value="AFJTV">Amazon Fire JVC TV</option>
-          <option value="AFXF2">Amazon Fire Xiaomi F2</option>
-          <option value="AR1">Apple TV ${this.translateToUsrLang('remote style')} 1</option>
-          <option value="AR2">Apple TV ${this.translateToUsrLang('remote style')} 2</option>
-          <option value="AR3">Apple TV ${this.translateToUsrLang('remote style')} 3</option>
-          <option value="CC1">Chromecast (snow)</option>
-          <option value="CC2">Chromecast (sky)</option>
-          <option value="CC3">Chromecast (sunrise)</option>
-          <option value="HO1">Homatics ${this.translateToUsrLang('style')} 1</option>
-          <option value="HO2">Homatics ${this.translateToUsrLang('style')} 2</option>
-          <option value="HO3">Homatics ${this.translateToUsrLang('style')} 3</option>
-          <option value="HO4">Homatics ${this.translateToUsrLang('style')} 4</option>
-          <option value="NS1">NVIDIA Shield ${this.translateToUsrLang('style')} 1</option>
-          <option value="NS2">NVIDIA Shield ${this.translateToUsrLang('style')} 2</option>
-          <option value="ON1">onn. ${this.translateToUsrLang('style')} 1</option>
-          <option value="ON2">onn. ${this.translateToUsrLang('style')} 2</option>
-          <option value="RVRP">Roku Voice ${this.translateToUsrLang('remote')} Pro</option>
-          <option value="RVR">Roku Voice ${this.translateToUsrLang('remote')}</option>
-          <option value="RSR">Roku Simple ${this.translateToUsrLang('remote')}</option>
-          <option value="RHR">Hisense Roku TV ${this.translateToUsrLang('remote')}</option>
-          <option value="RTR">TCL Roku TV ${this.translateToUsrLang('remote')}</option>
-          <option value="RWR">Westinghouse Roku TV ${this.translateToUsrLang('remote')}</option>
-          <option value="XM1">Xiaomi Mi ${this.translateToUsrLang('style')} 1</option>
-          <option value="XM2">Xiaomi Mi ${this.translateToUsrLang('style')} 2</option>
-          <option value="AL1">${this.translateToUsrLang('App Launcher')} 1</option>
-          <option value="AL2">${this.translateToUsrLang('App Launcher')} 2</option>
-        </select>
+        ${this.getRemoteStyleDropdown(getDeviceAttribute('friendlyName'))}
         <br>
         <br>
         ${this.getChromecastMediaControls(getDeviceAttribute("defaultRemoteStyle"))}

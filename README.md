@@ -50,7 +50,8 @@ from the device. System apps are excluded by default; enable **Include system ap
 The card automatically uses the catalog sensor associated with its media player.
 
 Choose apps for launcher slots in the card editor. Only selected apps appear on
-the remote, with their device icons when available. The dropdown contains only
+the remote as icons, with app names retained in tooltips and accessible labels.
+Apps without a usable icon show their name instead. The dropdown contains only
 discovered apps, with no hardcoded or custom launcher options.
 
 Android / Fire TV launcher choices require the installed-app catalog sensor.
