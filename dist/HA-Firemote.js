@@ -1,6 +1,6 @@
 const HAFiremoteVersion = 'v4.1.9';
 
-import {LitElement, html, css, unsafeHTML, unsafeCSS, styleMap} from './lit/lit-all.min.js';
+import {LitElement, html, css, unsafeHTML, unsafeCSS, styleMap, repeat} from './lit/lit-all.min.js';
 import {launcherData, launcherCSS} from "./launcher-buttons.js?version=v4.1.9";
 import {rosettaStone} from './language-translations.js?version=v4.1.9';
 import {devices} from './supported-devices.js?version=v4.1.9';
@@ -2007,20 +2007,6 @@ class FiremoteCard extends LitElement {
               font-size: calc(var(--sz) * 1.45rem);
           }
 
-          .discoveredApps {
-            grid-column: 1 / -1;
-          }
-          .discoveredApps .srcButton {
-            white-space: normal;
-            overflow-wrap: anywhere;
-            font-size: calc(var(--sz) * 0.8rem);
-          }
-          .appDiscoveryMessage {
-            color: var(--primary-text-color, #ccc);
-            font-size: calc(var(--sz) * 0.8rem);
-            padding: calc(var(--sz) * 0.5rem);
-            text-align: center;
-          }
           .srcButton {
             height: calc(var(--sz) * 2rem);
             width: calc(var(--sz) * 5.714rem);
@@ -3790,33 +3776,6 @@ class FiremoteCard extends LitElement {
     }
 
     function drawAppLaunchButtons(e, config, cols=3, max=6) {
-        if (config.auto_app_launchers !== false) {
-          const state = e.hass.states[config.entity];
-          const sources = state?.attributes.source_list;
-          const apps = Array.isArray(sources)
-            ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
-            : [];
-          return html`<div class="appLauncherAppsContainer discoveredApps">
-            ${apps.length ? apps.map(source => {
-              const catalogApp = [...appmap.values()].find(app => {
-                const family = app[config.device_family];
-                return source === family?.appName || source === family?.androidName || source === app.appName;
-              });
-              const label = catalogApp?.friendlyName || source;
-              const active = [state?.attributes.source, appId].includes(source);
-              return html`<button class="srcButton ${active ? 'appActive' : ''}"
-                title=${label} aria-label=${label}
-                @click=${() => {
-                  fireEvent(e, 'haptic', 'light');
-                  e.hass.callService('media_player', 'select_source', {
-                    entity_id: e._config.entity, source
-                  });
-                }}>${label}</button>`;
-            }) : html`<span class="appDiscoveryMessage" role="status">${Array.isArray(sources)
-              ? 'No apps available.' : 'This device does not expose an app list.'}</span>`}
-          </div>`;
-        }
-
         var spanclass = "three-col-span afappsgrid";
         if(cols == 2) {
           spanclass = "two-col-span nsappsgrid";
@@ -3839,78 +3798,23 @@ class FiremoteCard extends LitElement {
           appLaunchButtons.set("confBtn"+i, appid);
         }
 
-        // Properly apply default launcher buttons
-        var displayedRemote = config.defaultRemoteStyle_override || getDeviceAttribute("defaultRemoteStyle") || config.device_family;
-        if(['AF1', 'AF2', 'AF3', 'AF4', 'AF5', 'AF6', 'AL1', 'amazon-fire'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'prime-video');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'netflix');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'disney-plus');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'hulu');
+        if (['apple-tv', 'chromecast'].includes(config.device_family)) buttonStyle = 'button-round';
+        function sourceButton(val) {
+          if (!val.startsWith('source:')) return;
+          const source = decodeURIComponent(val.slice(7));
+          return html`<button class="srcButton ${[appId, e.hass.states[config.entity]?.attributes.source].includes(source) ? 'appActive' : ''}"
+            title=${source} aria-label=${source} @click=${() => {
+              fireEvent(e, 'haptic', 'light');
+              e.hass.callService('media_player', 'select_source', { entity_id: e._config.entity, source });
+            }}>${source}</button>`;
         }
-        else if(['AR1', 'AR2', 'AR3', 'apple-tv'].includes(displayedRemote)) {
-            buttonStyle = 'button-round';
-        }
-        else if(['CC1', 'CC2', 'CC3', 'chromecast'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'youtube');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'netflix');
-            buttonStyle = 'button-round';
-        }
-        else if(['NS1', 'NS2', 'nvidia-shield'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-        }
-        else if(['XM1', 'XM2', 'xiaomi'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'prime-video');
-        }
-        else if(['RSR', 'RVR'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'disney-plus');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'apple-tv');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'paramount-plus');
-        }
-        else if(['RTR'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'disney-plus');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'hulu');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'roku-channel');
-        }
-        else if(['RHR'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'hulu');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'roku-channel');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'disney-plus');
-        }
-        else if(['RVRP', 'RWR', 'roku'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'netflix');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'disney-plus');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'apple-tv');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'hulu');
-        }
-        else if(['AFJTV', 'AFXF2'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'prime-video');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'netflix');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'disney-plus');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'freeview-play');
-        }
-        else if(['ON1', 'ON2'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'youtube');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'netflix');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'disney-plus');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'paramount-plus');
-        }
-        else if(['HO1', 'HO2', 'HO3', 'HO4'].includes(displayedRemote)) {
-            appLaunchButtons.set("confBtn1", config.app_launch_1 || 'youtube');
-            appLaunchButtons.set("confBtn2", config.app_launch_2 || 'netflix');
-            appLaunchButtons.set("confBtn3", config.app_launch_3 || 'prime-video');
-            appLaunchButtons.set("confBtn4", config.app_launch_4 || 'rocket-launcher-btn');
-        }
-
 
         // Return button HTML
         if(['CC1', 'CC2', 'CC3', 'AR1', 'AR2', 'AR3'].includes(config.defaultRemoteStyle_override) || (['apple-tv', 'chromecast'].includes(config.device_family) && !(config.defaultRemoteStyle_override))) {
           return html `
             ${ Array.from(appLaunchButtons.keys()).map(key => {
               var val = appLaunchButtons.get(key);
+              if (val.startsWith('source:')) return sourceButton(val);
               if(val) {
                   return html `<button class="srcButton ${getAppButtonData(config, val, 'className')} ${getAppButtonData(config, val, 'active')} ${showHide(val)}" id="${val}-button" @click=${e.buttonDown}>
                                  ${unsafeHTML(getAppButtonData(config, val, buttonStyle) || getAppButtonData(config, val, 'button'))}
@@ -3924,6 +3828,7 @@ class FiremoteCard extends LitElement {
             <div class="${spanclass}">
             ${ Array.from(appLaunchButtons.keys()).map(key => {
               var val = appLaunchButtons.get(key);
+              if (val.startsWith('source:')) return sourceButton(val);
               return html `<button class="srcButton ${getAppButtonData(config, val, 'className')} ${getAppButtonData(config, val, 'active')} ${showHide(val)}" id="${val}-button" @click=${e.buttonDown}>
                              ${unsafeHTML(getAppButtonData(config, val, 'button'))}
                            </button>`;
@@ -5836,7 +5741,7 @@ class FiremoteCard extends LitElement {
         }
       }
       var noAppsClass = '';
-      if (configuredAppLaunchButtons==0 && this._config.auto_app_launchers === false){
+      if (configuredAppLaunchButtons==0){
         noAppsClass = 'noApps';
       }
 
@@ -8185,6 +8090,8 @@ class FiremoteCardEditor extends LitElement {
     if (!previous || !this.hass) return true;
     if (previous.config?.language !== this.hass.config?.language ||
         previous.entities !== this.hass.entities) return true;
+    if (JSON.stringify(previous.states[this._config?.entity]?.attributes.source_list) !==
+        JSON.stringify(this.hass.states[this._config?.entity]?.attributes.source_list)) return true;
     // Dropdowns need entity membership and friendly names, not playback state.
     this._indexEntities();
     return this._dropdownEntities.some(id =>
@@ -8530,14 +8437,6 @@ class FiremoteCardEditor extends LitElement {
 
   getAppChoiceOptionMenus(remoteStyle) {
     if (this._config.device_family === 'none' || !appButtonMax[remoteStyle]) return;
-    const discoveryToggle = html`<label>
-      <input type="checkbox" name="auto_app_launchers" id="autoAppLaunchersCheckbox"
-        ?checked=${this._config.auto_app_launchers !== false} @change=${this.configChanged}>
-      Automatically show device apps
-    </label><br>`;
-    if (this._config.auto_app_launchers !== false) {
-      return html`${discoveryToggle}<p>App buttons come from the device's source list.</p>`;
-    }
     const appmap = getAppMap(this._config);
     const family = this._config.device_family;
     let count = appButtonMax[remoteStyle];
@@ -8548,13 +8447,22 @@ class FiremoteCardEditor extends LitElement {
         const match = /^app_launch_(\d+)$/.exec(key);
         return match && this._config[key] ? Math.max(max, Number(match[1])) : max;
       }, 0);
-      count = Math.min(appmap.size, Math.max(6, last + 1));
+      count = Math.max(6, last + 1);
     }
-    const apps = [...appmap].filter(([, app]) => !app.deviceFamily || app.deviceFamily.includes(family))
-      .map(([id, app]) => [id, this.translateToUsrLang(app.friendlyName)]);
+    const sources = this.hass.states[this._config.entity]?.attributes.source_list;
+    const apps = (Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))] : [])
+      .map(source => ['source:' + encodeURIComponent(source), source]);
+    // Keep custom actions and saved catalog selections usable without offering the static catalog.
+    for (const [id, app] of appmap) {
+      if (id.startsWith('customlauncher ') || Object.keys(this._config).some(key =>
+          /^app_launch_\d+$/.test(key) && this._config[key] === id)) {
+        apps.push([id, this.translateToUsrLang(app.friendlyName)]);
+      }
+    }
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
-      ${discoveryToggle}<br>
+      <br>
+      ${!Array.isArray(sources) ? html`<p>This device does not expose an app list.</p>` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
         const value = this._config['app_launch_' + number] || '';
@@ -8562,8 +8470,8 @@ class FiremoteCardEditor extends LitElement {
           ${heading} ${number}:
           <select name="app_launch_${number}" id="app_launch_${number}" style="padding: .6em; font-size: 1em;"
             .value=${value} @change=${this.configChanged}>
-            <option value="" ?selected=${!appmap.has(value)}> - - - - </option>
-            ${apps.map(([id, name]) => html`<option value=${id} ?selected=${id === value}>${name}</option>`)}
+            <option value="" ?selected=${!apps.some(([id]) => id === value)}> - - - - </option>
+            ${repeat(apps, ([id]) => id, ([id, name]) => html`<option value=${id} ?selected=${id === value}>${name}</option>`)}
           </select><br>
         `;
       })}
