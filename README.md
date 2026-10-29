@@ -1,8 +1,13 @@
 # HA-Firemote
 
+This fork packages the Firemote dashboard card and installed-app discovery as one
+Home Assistant integration. Start with [installation](#install-through-hacs),
+[app launcher choices](#app-launcher-choices), or the [development guide](#development).
+Device screenshots and upstream wiki links below refer to the original Firemote
+project; follow this fork's installation instructions for the bundled integration.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/PRProd/HA-Firemote?style=for-the-badge)
+![Upstream release (latest by date)](https://img.shields.io/github/v/release/PRProd/HA-Firemote?style=for-the-badge&label=upstream%20release)
 ![Maintenance](https://img.shields.io/maintenance/yes/2026?style=for-the-badge)
 
 <a href="https://www.buymeacoffee.com/PRProd" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
@@ -127,15 +132,64 @@ integration.
 
 ## Repository layout
 
-- `custom_components/firemote_apps/`: installable Home Assistant integration.
-- `custom_components/firemote_apps/frontend/`: card source and bundled JavaScript dependencies; edit these files directly.
-- `scripts/`: version checks and install ZIP packaging.
-- `tests/`: backend, packaging, and browser regression tests.
-- `build/`: generated install archives, ignored by Git.
+`custom_components/firemote_apps/` is the installable integration. Its `frontend/`
+directory is the single source for the dashboard card, served directly by Home
+Assistant and included in HACS installs and ZIP archives. There is no separate
+`dist/` tree or copy step.
 
-The frontend keeps catalog lookup in `app-catalog.js`, dashboard sizing in
-`remote-layouts.js`, and static card styles in `remote-styles.js`.
-`HA-Firemote.js` contains the card, editor, and device command handling.
+| Path | Purpose |
+| --- | --- |
+| `custom_components/firemote_apps/frontend/HA-Firemote.js` | Card, editor, and device command handling |
+| `custom_components/firemote_apps/frontend/app-catalog.js` | Catalog matching and shared app lookup indexes |
+| `custom_components/firemote_apps/frontend/remote-layouts.js` | Masonry and Sections dashboard sizing |
+| `custom_components/firemote_apps/frontend/remote-styles.js` | Static remote styles |
+| `custom_components/firemote_apps/frontend/supported-devices.js` | Device definitions |
+| `custom_components/firemote_apps/frontend/launcher-buttons.js` | Legacy launcher commands and artwork retained for YAML compatibility |
+| `custom_components/firemote_apps/apps.py` | Installed-app discovery, APK metadata, and icon caching |
+| `scripts/` | Version checks and install ZIP packaging |
+| `tests/` | Backend, packaging, and browser regression tests |
+| `build/` | Generated install archives, ignored by Git |
+
+## Development
+
+Edit the frontend modules directly. The card uses bundled Lit and relative ES
+module imports, with no npm installation or compilation step. Read
+[AGENTS.md](AGENTS.md) for repository-specific constraints, including immutable
+state/config caches, legacy YAML support, and cleanup of held remote commands.
+
+Run the relevant checks from the repository root:
+
+```sh
+python3 scripts/bundle.py --check
+python3 -m unittest discover -s tests -p 'test_*.py'
+node tests/run.mjs
+node tests/run-viewport-scaling.mjs
+node tests/run.mjs catalog-layout.html
+node tests/run.mjs editor.html
+node tests/run.mjs commands.html
+```
+
+Browser checks require Node.js and Chromium/Chrome. Set `CHROMIUM_BIN` if the
+executable is not named `chromium`; no development server or real TV is needed.
+Python tests skip Home Assistant setup-flow checks unless their optional
+dependencies are installed. See [tests/README.md](tests/README.md) for that setup
+and a description of each suite. CI runs the browser suites, packaging checks,
+setup-flow tests, and a separate Python 3.14 runtime dependency check.
+
+The integration version in `custom_components/firemote_apps/manifest.json`
+controls the card's `FiremoteFrontendVersion` marker. After changing that version,
+run `python3 scripts/bundle.py` to update the marker; `--check` verifies the two
+match without writing files. The upstream `HAFiremoteVersion` is separate.
+
+To create an installable archive after the versions match:
+
+```sh
+python3 scripts/bundle.py --check --zip build/firemote.zip
+```
+
+Extract the archive into Home Assistant's `/config/` directory. Generated archives
+stay under the ignored `build/` directory. After updating an installation, restart
+Home Assistant and fully reload the dashboard; the editor's `Firemote frontend <version>` label identifies the loaded card code.
 
 <br>
 <br>
@@ -175,18 +229,23 @@ The frontend keeps catalog lookup in `app-catalog.js`, dashboard sizing in
 <br>
 
 ## YAML card setup options
+
+Choose installed apps in the editor to generate the correct launcher values.
+Android / Fire TV selections use `source:` followed by the package ID; Apple TV
+and Roku use `source:` followed by the URI-encoded native source name. Replace
+the example values below with apps available on your device.
+
 Examples:
+
 ```yaml
 type: custom:firemote-card
 entity: media_player.fire_tv_192_168_1_30
 device_family: amazon-fire
 device_type: fire_tv_4_series
 compatibility_mode: default
-app_launch_1: prime-video
-app_launch_2: netflix
-app_launch_3: hdmi_1
-app_launch_4: youtube
-hdmi_1: Cable
+app_launch_1: source:com.amazon.firebat
+app_launch_2: source:com.netflix.ninja
+app_launch_3: source:com.google.android.youtube.tv
 scale: 85
 ```
 ```yaml
@@ -196,10 +255,8 @@ device_family: apple-tv
 device_type: appletv-4k-gen2
 compatibility_mode: default
 apple_tv_remote_entity: remote.apple_tv_4k_2nd_gen
-app_launch_1: apple-appstore
-app_launch_2: apple-tv-arcade
-app_launch_3: mlb
-app_launch_4: nfl
+app_launch_1: source:TV
+app_launch_2: source:MLB
 visible_name_text: Game Room
 name_position: top
 button_overrides:
@@ -214,9 +271,8 @@ device_type: shield-tv-pro-2019
 compatibility_mode: default
 android_tv_remote_entity: remote.shield
 scale: '100'
-app_launch_1: netflix
-app_launch_2: function-find-my-remote
-app_launch_3: function-mute
+app_launch_1: source:com.netflix.ninja
+app_launch_2: source:com.google.android.youtube.tv
 ```
 
 Options:
@@ -231,11 +287,11 @@ Options:
 | device_type            | string | yes      | [appletv-4k-gen3](https://support.apple.com/kb/SP886)<br>[appletv-4k-gen2](https://support.apple.com/kb/SP845)<br>[appletv-4k-gen1](https://support.apple.com/kb/SP769)<br>[appletv-gen4](https://support.apple.com/kb/SP724)<br>[appletv-gen3](https://support.apple.com/kb/SP648)<br>[appletv-gen2](https://support.apple.com/kb/SP598)<br>[appletv-gen1](https://support.apple.com/kb/SP19)<br>chromecast-4k<br>[fire_tv_toshiba_v35](https://github.com/PRProd/HA-Firemote/wiki/Smart-TV---Toshiba-V35-Series-LED-FHD-HD---Fire-TV-(2021)) <br> [fire_tv_4_series](https://github.com/PRProd/HA-Firemote/wiki/Smart-TV---Fire-TV-4-Series-(2021)) <br> fire_tv_jvc-4k-2021 <br> fire_tv_insignia_f20 <br> [fire_tv_cube_third_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Cube---3rd-Gen-(2022)) <br> [fire_tv_cube_second_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Cube---2nd-Gen-(2019)) <br> [fire_tv_cube_first_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Cube---1st-Gen-(2018)) <br> [fire_tv_stick_4k_max_second_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-4K-Max-2nd-Gen-(2023)) <br> [fire_tv_stick_4k_second_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-4K-2nd-Gen-(2023)) <br>[fire_tv_stick_4k_max](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-4K-Max---1st-Gen-(2021)) <br> [fire_tv_3rd_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick---3rd-Gen-(2020)) <br> [fire_tv_stick_lite](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-Lite---1st-Gen-(2020)) <br> [fire_stick_4k](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-4K---1st-Gen-(2018)) <br> [fire_stick_second_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick---2nd-Gen-(2016---2019)) <br> [fire_stick_first_gen](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-Stick-1st-Gen-(2014)) <br> [fire_tv_second_gen_2015](https://github.com/PRProd/HA-Firemote/wiki/Fire-TV-%E2%80%90-2nd-Gen-(2015)) <br> [box-4-4k-plus](https://github.com/PRProd/HA-Firemote/wiki/Homatics-Box-R-4K-Plus) <br> dune-hd-box-4-4k-plus <br>  onn-streaming-device-4k-pro <br> [onn-4k-streaming-box](https://github.com/PRProd/HA-Firemote/wiki/onn.-Google-TV-4K-Streaming-Box-(2023)) <br> onn-full-hd-streaming-stick <br> roku-streambar-pro <br> roku-streambar <br> roku-ultra-lt-2023 <br> roku-ultra-lt <br> roku-ultra-2020 <br> roku-streaming-stick-4k <br> roku-express-4k-plus <br> roku-express-4k <br> roku-express <br> roku-premiere <br> roku-generic-hisense <br> roku-generic-tcl <br> roku-generic-westinghouse <br> shield-tv-2017 <br> shield-tv-pro-2017 <br> shield-tv-2019 <br> shield-tv-pro-2019 <br> mi-box-s <br> xiaomi-tv-stick-4k <br> [other](https://github.com/PRProd/HA-Firemote/wiki/entity:-none)| The type of device you are controlling<br>[Which devices are supported?](https://github.com/PRProd/HA-Firemote/wiki/Supported-Devices) |
 | compatibility_mode | string | no | default <br> strong <br> event0 <br> event1 <br> event2 <br> event3 <br> event4 <br> event5 <br> event6 <br> event7 <br> event8 <br> event9 <br> event10 <br> event11 <br> event12 <br> event13 | Adjust this value only if your buttons are completely unresponsive<br><br>Ignored in Apple TV configurations<br><br>[FAQ Available for additional help](https://github.com/PRProd/HA-Firemote#faq) |
 |defaultRemoteStyle_override | string | no | AF1 <br> AF2 <br> AF3 <br> AF4 <br> AF5 <br> AF6 <br> AFJTV <br> AFXF2 <br> AR1 <br> AR2 <br> AR3 <br> CC1 <br> CC2 <br> CC3 <br> HO1 <br> HO2 <br> HO3 <br> HO4 <br> NS1 <br> NS2 <br> ON1 <br> ON2 <br> RVRP <br> RVR <br> RSR <br> RHR <br> RTR <br> RWR <br> XM1 <br> XM2 <br> AL1 <br> AL2 | Optionally select a style of remote different from the one that shipped with your device |
-| app_launch_1<br>app_launch_2<br>app_launch_3<br>app_launch_4<br>app_launch_5<br>etc... | string | no | [ See App Launch Button Customization section for options](#app-launch-button-customization) | Quick launch apps customization |
+| app_launch_1<br>app_launch_2<br>app_launch_3<br>app_launch_4<br>app_launch_5<br>etc... | string | no | [See App Launcher Buttons](#app-launcher-buttons) | Quick launch apps customization |
 |hdmi_1<br>hdmi_2<br>hdmi_3</br>hdmi_4| string | no | Personalized name for this HDMI input | The name entered here will appear on the button (truncated to 8 characters to fit) |
 | scale_mode  | string | no       | `fixed`, `viewport-height`, `viewport-width`                    | Scaling mode. Defaults to `fixed`, which uses the remote's original size. Viewport modes preserve proportions and resize automatically with the visible dashboard area. |
 | scale       | integer| no       | Any positive number                                           | Percentage of the original size in fixed mode, or of the selected visible dashboard dimension in viewport mode. Defaults to 100. |
-| custom_launchers | object | no | Create your own app launcher buttons        | Details are in the [Launcher Button Customizations](https://github.com/PRProd/HA-Firemote#launcher-button-customizations) of the [README.md](https://github.com/PRProd/HA-Firemote/blob/main/README.md) file |
+| custom_launchers | object or list | no | YAML-defined script or action launchers | [YAML compatibility instructions](#launcher-button-customizations); not offered in the app dropdown |
 | button_overrides | object | no | Button name and HA script name are required.| Details are in the Button Overrides section of the [README.md](https://github.com/PRProd/HA-Firemote#button-overrides) file |
 | visible_name_text       | string | no      | Any text                                                         | Optional device label for your firemote |
 | name_position           | string | no      | hidden<br>bottom<br>top<br>                                      | Position for your optional device label |
@@ -271,14 +327,26 @@ Omit `scale_mode` or use `fixed` to keep the existing percentage sizing.
 <br>
 
 ## App Launcher Buttons
-Custom app launch buttons are not limited to the few that came printed on your remote control.  In fact, the possibilities are endless!  If you don't see your favorite app on this list, you can click on the [Issues](https://github.com/PRProd/HA-Firemote/issues) button on the top of this page, and select the [App Shortcut Request](https://github.com/PRProd/HA-Firemote/issues/new?assignees=PRProd&labels=New+App+Shortcut%2Cenhancement&projects=&template=App_Shortcut_Request.yaml&title=%5BNew+App+Shortcut%5D%3A+) option.  There are currently [**over 330** options available](https://github.com/PRProd/HA-Firemote/wiki/Firemote-App-Launchers), and the list just keeps growing.
+
+The editor lists apps discovered for the selected TV. Android / Fire TV names and
+icons come from the installed-app catalog; Apple TV and Roku choices come from
+their native source lists. Only apps assigned to launcher slots appear on the
+remote. App icons retain their proportions as the remote scales, with the app
+name as a fallback if an icon cannot load.
+
+For YAML, use `app_launch_1: source:com.example.app` for an Android package or
+`app_launch_1: source:An%20App` for a native source named `An App`. The editor stores
+these IDs automatically. Existing display-name selections, static launcher IDs
+such as `netflix`, and custom YAML launchers remain supported by the runtime;
+legacy static and custom entries are not offered in the discovered-app dropdown.
+Keep those assignments in YAML if you want to retain them.
 
 <br>
 <br>
 <br>
 
 ## Launcher Button Customizations
-You are not limited to only using the launcher buttons that come with Firemote.  Through YAML, you can define your own working buttons in one of two ways: defining a script or constructing an action call.
+Custom launchers remain available through YAML for scripts and Home Assistant action calls. Assign them with `app_launch_N: customlauncher <friendly_name>`, as shown below. The visual editor lists discovered apps and does not offer custom launcher definitions.
 
 Example:
 ```yaml
@@ -317,7 +385,7 @@ scale: '110'
 YAML usage:
 | Key           | Value           | Required                  | Description                                                                     |
 | ------------- | --------------- | ------------------------- | ------------------------------------------------------------------------------- |
-| friendly_name | string          | yes                       | This is the name that will appear in the GUI app selector dropdown              |
+| friendly_name | string | no, if `label` supplies the name | Identifier used in `app_launch_N: customlauncher <name>`; defaults to `label` when omitted |
 | label         | string          | no                        | The text that will appear on the button                                         |
 | icon          | mdi icon name   | no                        | a valid mdi icon name<br> ex: mdi:lamp                                          |
 | image_path    | url             | no                        | path to an image resource                                                       |
@@ -329,9 +397,7 @@ YAML usage:
 | data          | object          | no                        | optional parameters for your action, or script variables                        |
 
 
-Once defined, a custom button can be assigned to a Firemote button location through the YAML config itself, or it can be selected through the Visual Editor dropdown
-
-![image](https://github.com/PRProd/HA-Firemote/assets/25486599/ce6ccb6c-fae1-4757-8ee8-087831e4b5b5)
+Assign custom buttons in YAML. Selecting a discovered app for the same slot in the visual editor replaces that slot's custom assignment.
 
 <br>
 <br>
@@ -468,8 +534,19 @@ Apple TV app shortcuts work simply by passing the name of the app to the apple t
 <br>
 <br>
 
-### I want a shortcut button for an app I use frequently, but it's not on the list.  Can it be added?
-Absolutely!  Simply ask!  Here's how: From the [Issues](https://github.com/PRProd/HA-Firemote/issues) menu, simply start a new [App Shortcut Request](https://github.com/PRProd/HA-Firemote/issues/new?assignees=PRProd&labels=New+App+Shortcut%2Cenhancement&projects=&template=App_Shortcut_Request.yaml&title=%5BNew+App+Shortcut%5D%3A+).  If you absolutely cannot wait, you can also [build your own launcher button](https://github.com/PRProd/HA-Firemote#launcher-button-customizations) using YAML.
+### An installed app is missing from the launcher list. How do I add it?
+
+For Android / Fire TV, check that the Firemote integration and card use the same
+ADB media player, then inspect the editor's catalog status. Enable **Include
+system apps** in the integration's options if the app is preinstalled. Refresh
+the catalog sensor with `homeassistant.update_entity` after installing an app.
+Only apps exposing a launcher activity are listed. An unavailable catalog must
+be restored before app choices can load; requesting a static shortcut is not
+required. See the [catalog troubleshooting guide](custom_components/firemote_apps/README.md#catalog-exists-but-the-card-lists-system-processes).
+
+For Apple TV and Roku, the app must appear in the media player's native source
+list. Scripts and other actions can still use [custom YAML launchers](#launcher-button-customizations).
+
 <br>
 <br>
 
