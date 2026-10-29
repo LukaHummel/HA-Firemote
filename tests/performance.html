@@ -13,7 +13,7 @@ function check(condition, message) {
   assertions.push(message);
 }
 const state = (name, value = 'on') => ({ state: value, attributes: { friendly_name: name, app_id: 'com.netflix.ninja' } });
-const config = { entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'netflix' };
+const config = { auto_app_launchers: false, entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', app_launch_1: 'netflix' };
 const registry = { 'media_player.tv': { platform: 'androidtv' }, 'remote.tv': { platform: 'androidtv_remote' } };
 const hass = { config: { language: 'en' }, entities: registry,
   states: { 'media_player.tv': state('TV'), 'remote.tv': state('Remote'), 'sensor.other': state('Sensor') } };
@@ -127,6 +127,29 @@ try {
     states: { ...hass.states, 'media_player.new_tv': state('New TV') } };
   await editor.updateComplete;
   check(editor.shadowRoot.querySelector('#entity option[value="media_player.new_tv"]'), 'registry changes refresh cached platform choices');
+  const discoveredHass = { ...hass, callService: (...args) => calls.push(args),
+    states: { ...hass.states, 'media_player.tv': { ...state('TV'), attributes: {
+      source_list: ['com.netflix.ninja', 'Unknown & <App>', 'com.netflix.ninja', '', null],
+      source: 'Unknown & <App>'
+    } } } };
+  const discovered = await mount('firemote-card', { ...config, auto_app_launchers: true }, discoveredHass);
+  let appButtons = discovered.shadowRoot.querySelectorAll('.discoveredApps button');
+  check(appButtons.length === 2, 'discovery renders unique valid sources without hard-coded defaults');
+  check(appButtons[1].textContent === 'Unknown & <App>' && !appButtons[1].querySelector('app'), 'unknown app labels are rendered safely');
+  check(appButtons[1].classList.contains('appActive'), 'current discovered source is highlighted');
+  appButtons[1].click();
+  check(calls.at(-1)[0] === 'media_player' && calls.at(-1)[1] === 'select_source' && calls.at(-1)[2].source === 'Unknown & <App>', 'discovered apps launch using the original source');
+  discovered.hass = { ...discoveredHass, states: { ...hass.states,
+    'media_player.tv': { ...state('TV'), attributes: { source_list: ['New app'] } } } };
+  await discovered.updateComplete;
+  check(discovered.shadowRoot.querySelectorAll('.discoveredApps button').length === 1 && discovered.shadowRoot.querySelector('.discoveredApps button').textContent === 'New app', 'installed app changes replace launcher buttons');
+  discovered.hass = hass;
+  await discovered.updateComplete;
+  check(discovered.shadowRoot.querySelector('.appDiscoveryMessage') && !discovered.shadowRoot.querySelector('.discoveredApps button'), 'missing discovery data shows an explanatory empty state');
+  discovered.hass = { ...hass, states: { ...hass.states, 'media_player.tv': { ...state('TV'), attributes: { source_list: [] } } } };
+  await discovered.updateComplete;
+  check(discovered.shadowRoot.querySelector('.appDiscoveryMessage').textContent === 'No apps available.', 'empty source lists do not introduce default apps');
+  discovered.remove();
   let models = 0;
   for (const [family, data] of Object.entries(devices)) {
     for (const [category, entries] of Object.entries(data)) {

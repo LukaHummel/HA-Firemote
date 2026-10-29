@@ -2007,6 +2007,20 @@ class FiremoteCard extends LitElement {
               font-size: calc(var(--sz) * 1.45rem);
           }
 
+          .discoveredApps {
+            grid-column: 1 / -1;
+          }
+          .discoveredApps .srcButton {
+            white-space: normal;
+            overflow-wrap: anywhere;
+            font-size: calc(var(--sz) * 0.8rem);
+          }
+          .appDiscoveryMessage {
+            color: var(--primary-text-color, #ccc);
+            font-size: calc(var(--sz) * 0.8rem);
+            padding: calc(var(--sz) * 0.5rem);
+            text-align: center;
+          }
           .srcButton {
             height: calc(var(--sz) * 2rem);
             width: calc(var(--sz) * 5.714rem);
@@ -3776,6 +3790,33 @@ class FiremoteCard extends LitElement {
     }
 
     function drawAppLaunchButtons(e, config, cols=3, max=6) {
+        if (config.auto_app_launchers !== false) {
+          const state = e.hass.states[config.entity];
+          const sources = state?.attributes.source_list;
+          const apps = Array.isArray(sources)
+            ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
+            : [];
+          return html`<div class="appLauncherAppsContainer discoveredApps">
+            ${apps.length ? apps.map(source => {
+              const catalogApp = [...appmap.values()].find(app => {
+                const family = app[config.device_family];
+                return source === family?.appName || source === family?.androidName || source === app.appName;
+              });
+              const label = catalogApp?.friendlyName || source;
+              const active = [state?.attributes.source, appId].includes(source);
+              return html`<button class="srcButton ${active ? 'appActive' : ''}"
+                title=${label} aria-label=${label}
+                @click=${() => {
+                  fireEvent(e, 'haptic', 'light');
+                  e.hass.callService('media_player', 'select_source', {
+                    entity_id: e._config.entity, source
+                  });
+                }}>${label}</button>`;
+            }) : html`<span class="appDiscoveryMessage" role="status">${Array.isArray(sources)
+              ? 'No apps available.' : 'This device does not expose an app list.'}</span>`}
+          </div>`;
+        }
+
         var spanclass = "three-col-span afappsgrid";
         if(cols == 2) {
           spanclass = "two-col-span nsappsgrid";
@@ -5795,7 +5836,7 @@ class FiremoteCard extends LitElement {
         }
       }
       var noAppsClass = '';
-      if (configuredAppLaunchButtons==0){
+      if (configuredAppLaunchButtons==0 && this._config.auto_app_launchers === false){
         noAppsClass = 'noApps';
       }
 
@@ -8489,6 +8530,14 @@ class FiremoteCardEditor extends LitElement {
 
   getAppChoiceOptionMenus(remoteStyle) {
     if (this._config.device_family === 'none' || !appButtonMax[remoteStyle]) return;
+    const discoveryToggle = html`<label>
+      <input type="checkbox" name="auto_app_launchers" id="autoAppLaunchersCheckbox"
+        ?checked=${this._config.auto_app_launchers !== false} @change=${this.configChanged}>
+      Automatically show device apps
+    </label><br>`;
+    if (this._config.auto_app_launchers !== false) {
+      return html`${discoveryToggle}<p>App buttons come from the device's source list.</p>`;
+    }
     const appmap = getAppMap(this._config);
     const family = this._config.device_family;
     let count = appButtonMax[remoteStyle];
@@ -8505,7 +8554,7 @@ class FiremoteCardEditor extends LitElement {
       .map(([id, app]) => [id, this.translateToUsrLang(app.friendlyName)]);
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
-      <br>
+      ${discoveryToggle}<br>
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
         const value = this._config['app_launch_' + number] || '';

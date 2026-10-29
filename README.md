@@ -30,6 +30,21 @@ Need More Information?  Check out this project's [Wiki](https://github.com/PRPro
 <br>
 <br>
 
+## Automatic app buttons
+
+The dashboard builds app buttons from the configured media player's Home Assistant
+`source_list` attribute and updates them when that list changes. Every available
+source gets a button, including apps outside Firemote's built-in catalog. Clicking
+one calls `media_player.select_source` with its original source name.
+
+The device integration must expose `source_list`; the card cannot query installed
+packages directly. Some integrations include inputs in this list, which will also
+appear as buttons. An empty or missing list displays a status message.
+
+To use the existing manually configured launchers instead, set
+`auto_app_launchers: false` in the card YAML. Existing `app_launch_1`,
+`app_launch_2`, and custom launcher settings apply in manual mode.
+
 ## Introduction
 **Firemote** is a custom [Home Assistant](https://www.home-assistant.io/) card that is capable of controlling your media devices directly from any Home Assistant dashboard. The Firemote dashboard remotes are designed to look just like your physical remote controls, but they also contain TONS of customization options to choose from!
 

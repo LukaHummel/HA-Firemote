@@ -10,7 +10,7 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
   assertions.push(message);
 }
-const config = { entity: 'none', device_family: 'amazon-fire', device_type: 'fire_tv_4_series' };
+const config = { auto_app_launchers: false, entity: 'none', device_family: 'amazon-fire', device_type: 'fire_tv_4_series' };
 const card = document.createElement('firemote-card');
 card.hass = { states: {}, entities: {}, config: { language: 'en' } };
 async function configure(options) {
