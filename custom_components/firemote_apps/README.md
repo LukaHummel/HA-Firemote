@@ -17,17 +17,11 @@ and only selected apps appear on the remote.
    download **Firemote**. HACS installs the backend and bundled card together.
    Alternatively, extract `firemote.zip` into `/config/`, or copy the entire
    `firemote_apps` directory into `/config/custom_components/firemote_apps/`.
-3. Add this to `configuration.yaml`, using your ADB media player entity:
-
-   ```yaml
-   firemote_apps:
-     media_players:
-       - media_player.living_room_tv
-     include_system_apps: false
-   ```
-
-4. Restart Home Assistant. It installs the APK parser dependency on first startup;
-   this can take several minutes.
+3. Restart Home Assistant so it loads the integration and its dependencies.
+4. Open **Settings → Devices & services → Add Integration → Firemote**.
+   Select the Android Debug Bridge media player for your TV. Leave **Include
+   system apps** off to list only downloaded apps, or enable it to include
+   preinstalled apps. Submit the form. The first scan may take several minutes.
 5. In **Settings → Dashboards → Resources**, add
    `/firemote/frontend/HA-Firemote.js` with type **JavaScript Module**.
    If you previously installed the standalone card, remove its old resource entry
@@ -49,6 +43,18 @@ remove that old HACS repository entry and add it again as **Integration**. Remov
 its old dashboard resource and use the bundled URL above. Keep your card YAML;
 there is no automatic conversion of the existing HACS category. This fork is a
 custom repository and is separate from the upstream Firemote Dashboard listing.
+
+## Existing YAML installations
+
+Existing `firemote_apps:` YAML is imported automatically into one integration
+entry per TV. Sensor unique IDs and the icon cache are preserved. Once the
+entries appear under Devices & services, remove the old YAML block so removing
+an integration later does not re-import it at the next restart. You do not need
+to add the same TV again through the setup screen.
+
+Add Firemote again to configure another TV. Duplicate setup for the same media
+player is prevented. Removing an entry removes its sensor and polling; it does
+not delete the TV's cached images or the shared dashboard files.
 
 ## Build the bundle
 
@@ -73,8 +79,9 @@ catalog.
 
 Only installed apps with a MAIN/LAUNCHER or MAIN/LEANBACK_LAUNCHER activity are
 included. System packages are excluded by default (`pm list packages -3`). Some
-preinstalled streaming apps count as system apps: set `include_system_apps: true`
-and restart to include those as well. This setting applies to all configured TVs.
+preinstalled streaming apps count as system apps: enable **Include system apps**
+in the integration's **Configure** options to include them. Each TV has its own
+setting, and changes reload that TV's catalog automatically.
 
 APK files are downloaded one at a time to temporary storage and deleted after
 extraction. Labels and APK path fingerprints are cached under
@@ -83,12 +90,15 @@ trigger extraction again. To force re-extraction after an in-place APK change,
 stop Home Assistant, remove that cache directory, and restart.
 
 Icons are normalized to PNG, at most 192 × 192 pixels, under
-`/config/www/firemote_apps/` and served through `/local/firemote_apps/`. These
+`/config/www/firemote_apps/` and served through the integration’s explicitly
+registered `/firemote/icons/` route. These
 static icon files are accessible without Home Assistant authentication, like
 other files in `www`; no APKs or credentials are served. Uninstalled apps' icons
 are removed on a successful scan. Remove both directories to erase the cache.
 
-Missing labels fall back to package IDs. Adaptive/vector-only icons, resources
+Icon extraction checks all bitmap resource variants and TV banners rather than
+only the preferred density. Missing labels fall back to package IDs.
+Adaptive/vector-only icons, resources
 stored solely in split APKs, and unreadable APKs may fall back to text; this version
 does not render Android vector drawables. No hardcoded app catalog is used.
 
@@ -103,3 +113,18 @@ query-activities` or `pm query-activities`. It does not support Roku or Apple TV
 The backend has automated transport/cache/parser tests, but must still be checked
 against your Home Assistant installation and TV. No real TV is needed for the
 repository's test suite.
+
+## Missing icons
+
+After upgrading to 0.1.1, restart Home Assistant and reload the dashboard. The new
+extractor automatically invalidates the old metadata cache on its first scan;
+there is no need to delete it manually. Existing selections stored by display
+name (for example `Prime Video`) now resolve to the matching catalog package and
+icon as well.
+
+If a button still shows only text, inspect the matching catalog sensor in
+**Developer Tools → States**. Its `apps` entry should include `id`, `name`, and
+`icon`. Open the `icon` path on your Home Assistant server to check image serving.
+A missing `icon` field means no usable bitmap was extracted. A failed image URL
+means an image-serving problem. Check Home Assistant logs for extraction failures;
+vector-only icons and resources held only in split APKs still fall back to text.

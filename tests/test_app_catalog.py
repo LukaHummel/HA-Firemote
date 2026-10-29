@@ -157,5 +157,97 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class ExtractionTests(unittest.TestCase):
+    """Exercise resource selection without requiring APK parser dependencies."""
+
+    def extract(self, icons, resources=None, attributes=None, files=None):
+        import sys
+        from types import SimpleNamespace
+
+        resources = resources or []
+        attributes = attributes or {}
+        files = files or {"res/icon.png": b"bitmap"}
+
+        class APK:
+            def __init__(self, _):
+                pass
+
+            def get_app_name(self):
+                return "Prime Video"
+
+            def get_app_icon(self, max_dpi):
+                return icons.get(max_dpi)
+
+            def get_attribute_value(self, _, attribute):
+                return attributes.get(attribute)
+
+            def get_android_resources(self):
+                return SimpleNamespace(get_resolved_res_configs=lambda _: resources)
+
+            def get_file(self, filename):
+                return files[filename]
+
+        class Image:
+            @staticmethod
+            def open(stream):
+                if stream.read() != b"bitmap":
+                    raise OSError("Not a bitmap")
+                return Image()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def thumbnail(self, _):
+                pass
+
+            def convert(self, _):
+                return self
+
+            def save(self, path, _):
+                path.write_bytes(b"normalized PNG")
+
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.dict(
+                sys.modules,
+                {
+                    "androguard.core.apk": SimpleNamespace(APK=APK),
+                    "PIL": SimpleNamespace(Image=Image),
+                },
+            ),
+        ):
+            icon = Path(temp) / "icon.png"
+            name = apps.extract_metadata("fixture.apk", "com.amazon.video", icon)
+            return name, icon.is_file()
+
+    def test_nodpi_icon_is_not_excluded(self):
+        self.assertEqual(
+            self.extract({65533: None, 65536: "res/icon.png"}), ("Prime Video", True)
+        )
+
+    def test_xml_preference_falls_back_to_bitmap_resource(self):
+        self.assertEqual(
+            self.extract(
+                {65533: "res/adaptive.xml", 65536: "res/adaptive.xml"},
+                resources=[(None, "res/adaptive.xml"), (None, "res/icon.png")],
+                attributes={"icon": "@7f010001"},
+                files={"res/adaptive.xml": b"<xml>", "res/icon.png": b"bitmap"},
+            ),
+            ("Prime Video", True),
+        )
+
+    def test_tv_banner_is_used_when_icon_missing(self):
+        self.assertEqual(
+            self.extract({}, attributes={"banner": "res/icon.png"}),
+            ("Prime Video", True),
+        )
+
+    def test_unreadable_icon_does_not_discard_display_name(self):
+        self.assertEqual(self.extract({65533: "missing.png"}), ("Prime Video", False))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,37 @@
+{
+  "title": "Firemote",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Firemote",
+        "description": "Select a TV configured with Android Debug Bridge. Firemote will discover its installed apps, names, and icons. Then add the bundled card resource `/firemote/frontend/HA-Firemote.js` to your dashboard resources.",
+        "data": {
+          "entity_id": "Android Debug Bridge media player",
+          "include_system_apps": "Include system apps"
+        },
+        "data_description": {
+          "include_system_apps": "Include preinstalled system apps as well as downloaded apps."
+        }
+      }
+    },
+    "error": {
+      "invalid_entity": "Select an Android Debug Bridge media player."
+    },
+    "abort": {
+      "no_adb_entities": "First set up Android Debug Bridge for your TV, then add Firemote again. Android TV Remote alone is insufficient.",
+      "invalid_entity": "This media player is not provided by Android Debug Bridge.",
+      "already_configured": "Firemote is already configured for this media player."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "App discovery options",
+        "description": "Changing this setting refreshes the app catalog.",
+        "data": {
+          "include_system_apps": "Include system apps"
+        }
+      }
+    }
+  }
+}

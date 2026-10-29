@@ -26,3 +26,14 @@ jobs:
           python-version: '3.13'
       - run: python3 scripts/bundle.py --check
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+  setup-flow:
+    name: Home Assistant setup flow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r tests/requirements-setup.txt
+      - run: python3 -m unittest discover -s tests -p 'test_config_flow.py'

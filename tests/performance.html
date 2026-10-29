@@ -153,7 +153,7 @@ try {
   await discoveredEditor.updateComplete;
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').textContent.includes('Replacement'), 'app choices refresh when the device list changes');
   const catalogState = { state: '1', attributes: { firemote_entity: config.entity,
-    apps: [{ id: 'com.example.cinema', name: 'Cinema Room', icon: 'data:image/png;base64,iVBORw0KGgo=' }] } };
+    apps: [{ id: 'com.example.cinema', name: 'Cinema Room', icon: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=' }] } };
   const catalogHass = { ...discoveredHass, states: { ...discoveredHass.states, 'sensor.firemote_apps': catalogState } };
   discoveredEditor.hass = catalogHass;
   await discoveredEditor.updateComplete;
@@ -167,8 +167,25 @@ try {
   await discovered.updateComplete;
   const iconButton = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
   check(iconButton.textContent === 'Cinema Room' && iconButton.querySelector('img'), 'selected app renders its resolved name and device icon');
+  const loadedIcon = iconButton.querySelector('img');
+  if (!loadedIcon.complete) await new Promise(resolve => {
+    loadedIcon.addEventListener('load', resolve, { once: true });
+    loadedIcon.addEventListener('error', resolve, { once: true });
+  });
+  check(loadedIcon.naturalWidth > 0 && !loadedIcon.hidden, 'device icon actually decodes and remains visible');
   iconButton.click();
   check(calls.at(-1)[2].source === 'com.example.cinema', 'resolved names do not replace the package ID used for launching');
+  discovered.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:Cinema%20Room', app_launch_2: '' });
+  await discovered.updateComplete;
+  const aliasButton = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
+  check(aliasButton.querySelector('img'), 'name-based selections made before backend installation resolve their icons');
+  aliasButton.click();
+  check(calls.at(-1)[2].source === 'com.example.cinema', 'name-based selection resolves to the correct package ID when launching');
+  discoveredEditor.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:Cinema%20Room' });
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').value === 'source:com.example.cinema', 'editor retains name-based selections when the backend supplies package IDs');
+  discovered.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:com.example.cinema', app_launch_2: '' });
+  discoveredEditor.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:com.example.cinema' });
   const updatedCatalogHass = { ...catalogHass, states: { ...catalogHass.states,
     'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes,
       apps: [{ id: 'com.example.cinema', name: 'Renamed Cinema' }] } } } };

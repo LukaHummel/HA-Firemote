@@ -8,18 +8,22 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers import entity_registry as er
 
 from .apps import AppCatalog
+from .const import CONF_ENTITY, CONF_INCLUDE_SYSTEM
 
 SCAN_INTERVAL = timedelta(hours=6)
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    if discovery_info is None:
-        return
+async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
         [
-            FiremoteApps(hass, entity_id, discovery_info["include_system_apps"])
-            for entity_id in discovery_info["media_players"]
+            FiremoteApps(
+                hass,
+                entry.data[CONF_ENTITY],
+                entry.options.get(
+                    CONF_INCLUDE_SYSTEM, entry.data.get(CONF_INCLUDE_SYSTEM, False)
+                ),
+            )
         ],
         True,
     )
@@ -42,7 +46,7 @@ class FiremoteApps(SensorEntity):
         self.catalog = AppCatalog(
             hass.config.path(".storage", "firemote_apps", key),
             hass.config.path("www", "firemote_apps", key),
-            f"/local/firemote_apps/{key}/",
+            f"/firemote/icons/{key}/",
             hass.async_add_executor_job,
         )
 

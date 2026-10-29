@@ -3834,14 +3834,16 @@ class FiremoteCard extends LitElement {
         function sourceButton(val) {
           if (!val.startsWith('source:')) return;
           const source = decodeURIComponent(val.slice(7));
-          const app = deviceApps(e.hass, config)?.find(app => app.id === source);
+          const apps = deviceApps(e.hass, config) || [];
+          // Selections made before installing the backend may contain a display name.
+          const app = apps.find(app => app.id === source) || apps.find(app => app.name === source);
           const name = app?.name || source;
           return html`<button class="srcButton ${[appId, e.hass.states[config.entity]?.attributes.source].includes(source) ? 'appActive' : ''}"
             title=${name} aria-label=${name} @click=${() => {
               fireEvent(e, 'haptic', 'light');
-              e.hass.callService('media_player', 'select_source', { entity_id: e._config.entity, source });
+              e.hass.callService('media_player', 'select_source', { entity_id: e._config.entity, source: app?.id || source });
             }}>${app?.icon ? html`<img class="deviceAppIcon" src=${e.hass.hassUrl ? e.hass.hassUrl(app.icon) : app.icon}
-              alt="" @error=${event => { event.target.hidden = true; }}>` : ''}<span>${name}</span></button>`;
+              alt="" @load=${event => { event.target.hidden = false; }} @error=${event => { event.target.hidden = true; }}>` : ''}<span>${name}</span></button>`;
         }
 
         // Return button HTML
@@ -8491,7 +8493,9 @@ class FiremoteCardEditor extends LitElement {
       ${discoveredApps === null ? html`<p>This device does not expose an app list. Install the Firemote Apps companion integration for installed apps, names, and icons.</p>` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
-        const value = this._config['app_launch_' + number] || '';
+        const saved = this._config['app_launch_' + number] || '';
+        const alias = saved.startsWith('source:') && discoveredApps?.find(app => app.name === decodeURIComponent(saved.slice(7)));
+        const value = apps.some(([id]) => id === saved) ? saved : alias ? 'source:' + encodeURIComponent(alias.id) : saved;
         return html`
           ${heading} ${number}:
           <select name="app_launch_${number}" id="app_launch_${number}" style="padding: .6em; font-size: 1em;"

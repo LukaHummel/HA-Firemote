@@ -35,7 +35,8 @@ Need More Information?  Check out this project's [Wiki](https://github.com/PRPro
 Add `https://github.com/LukaHummel/HA-Firemote` to HACS **Custom repositories**
 with type **Integration**, then download **Firemote**. This installs the backend
 and bundled dashboard card together. Follow the [setup instructions](custom_components/firemote_apps/README.md)
-for YAML configuration and the dashboard resource URL.
+to add Firemote in **Settings → Devices & services**, select your TV, and add
+the dashboard resource URL. No integration YAML is required.
 
 If this fork was previously added as a Dashboard repository, remove that HACS
 entry and re-add it as Integration. Replace the old card resource with
@@ -45,7 +46,7 @@ entry and re-add it as Integration. Replace the old card resource with
 
 For Android / Fire TV, install the [bundled Firemote integration and card](custom_components/firemote_apps/README.md)
 to discover installed launcher apps, resolve their display names, and cache icons
-from the device. System apps are excluded by default; set `include_system_apps: true` in the backend configuration to include them. The integration serves the included card at `/firemote/frontend/HA-Firemote.js`.
+from the device. System apps are excluded by default; enable **Include system apps** in the integration’s Configure options to include them. The integration serves the included card at `/firemote/frontend/HA-Firemote.js`.
 The card automatically uses the catalog sensor associated with its media player.
 
 Choose apps for launcher slots in the card editor. Only selected apps appear on

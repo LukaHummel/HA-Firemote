@@ -21,3 +21,17 @@ necessary; mocked transport tests do not certify device compatibility.
 `dist`. The Python suite also builds an archive in a temporary directory and
 checks all runtime files are included, without Python caches. After frontend
 edits, run `python3 scripts/bundle.py` before running the browser tests.
+
+The setup-flow tests additionally need Home Assistant. To run them in isolation:
+
+```sh
+python3 -m venv /tmp/firemote-ha-tests
+/tmp/firemote-ha-tests/bin/pip install -r tests/requirements-setup.txt
+/tmp/firemote-ha-tests/bin/python -m unittest discover -s tests -p 'test_config_flow.py'
+```
+
+These exercise the real config-flow classes with mocked registries and entry
+managers, covering ADB-only choices, system-app defaults, duplicate prevention,
+YAML import, per-TV options, setup retries, platform forwarding and removal.
+The dependency-free suite skips these tests; CI runs them separately with Home
+Assistant installed. They do not connect to a TV.

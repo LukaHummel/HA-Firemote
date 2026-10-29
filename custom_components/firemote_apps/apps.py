@@ -41,17 +41,53 @@ def extract_metadata(apk_path, package, icon_path):
     name = apk.get_app_name() or package
     if name.startswith("@"):
         name = package
-    # Exclude anydpi adaptive XML icons in favor of a bitmap resource.
-    icon = apk.get_app_icon(max_dpi=65533)
-    if icon:
-        data = apk.get_file(icon)
-        if data:
-            try:
-                with Image.open(BytesIO(data)) as image:
-                    image.thumbnail((192, 192))
-                    image.convert("RGBA").save(icon_path, "PNG")
-            except (OSError, ValueError):
-                _LOGGER.debug("No decodable bitmap icon for %s", package)
+    candidates = []
+    # First prefer legacy bitmap densities, then include nodpi and adaptive icons.
+    for density in (65533, 65536):
+        try:
+            candidates.append(apk.get_app_icon(max_dpi=density))
+        except Exception:
+            _LOGGER.debug("Could not resolve app icon for %s", package, exc_info=True)
+    # A single highest-density resource may be XML while lower densities are PNG.
+    # TV apps may supply a bitmap banner instead of a traditional app icon.
+    for attribute in ("icon", "banner"):
+        try:
+            resource = apk.get_attribute_value("application", attribute)
+            if not resource:
+                continue
+            if not resource.startswith("@"):
+                candidates.append(resource)
+                continue
+            resources = apk.get_android_resources()
+            if resources:
+                resource_id = int(resource.split(":")[-1].lstrip("@"), 16)
+                candidates.extend(
+                    path for _, path in resources.get_resolved_res_configs(resource_id)
+                )
+        except Exception:
+            _LOGGER.debug(
+                "Could not resolve %s resources for %s",
+                attribute,
+                package,
+                exc_info=True,
+            )
+    for icon in dict.fromkeys(
+        candidate for candidate in candidates if isinstance(candidate, str)
+    ):
+        try:
+            data = apk.get_file(icon)
+            if not data:
+                continue
+            with Image.open(BytesIO(data)) as image:
+                image.thumbnail((192, 192))
+                image.convert("RGBA").save(icon_path, "PNG")
+            break
+        except Exception:
+            _LOGGER.debug(
+                "No decodable bitmap at %s in %s", icon, package, exc_info=True
+            )
+    if not icon_path.is_file():
+        _LOGGER.debug("No bitmap icon or TV banner found for %s", package)
     return name
 
 
@@ -146,7 +182,7 @@ class AppCatalog:
                 apps.append(app)
                 continue
             fingerprint = sha256(
-                (package + "\n" + "\n".join(paths)).encode()
+                ("metadata-v2\n" + package + "\n" + "\n".join(paths)).encode()
             ).hexdigest()
             icon_file = fingerprint + ".png"
             icon_path = self.icon_dir / icon_file
