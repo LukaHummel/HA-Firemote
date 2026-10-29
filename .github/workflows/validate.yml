@@ -27,6 +27,23 @@ jobs:
       - run: python3 scripts/bundle.py --check
       - run: python3 -m unittest discover -s tests -p 'test_*.py'
 
+  frontend:
+    name: Frontend regressions
+    runs-on: ubuntu-latest
+    env:
+      CHROMIUM_BIN: google-chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          node tests/run.mjs
+          node tests/run-viewport-scaling.mjs
+          node tests/run.mjs catalog-layout.html
+          node tests/run.mjs editor.html
+          node tests/run.mjs commands.html
+
   setup-flow:
     name: Home Assistant setup flow
     runs-on: ubuntu-latest

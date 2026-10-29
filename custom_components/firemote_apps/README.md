@@ -66,8 +66,14 @@ python3 scripts/bundle.py --zip build/firemote.zip
 
 The archive contains `custom_components/firemote_apps/` with all Python code and
 frontend dependencies. Extracting it into the Home Assistant configuration
-folder installs both parts. After changing `dist`, run `python3 scripts/bundle.py`
-to refresh the packaged frontend; CI checks that the copies match.
+folder installs both parts.
+
+Edit the card and its dependencies directly in
+`custom_components/firemote_apps/frontend/`. This is the single frontend source,
+served by Home Assistant and included in HACS installs and ZIP archives; no
+copy or compilation step is needed. After changing the version in
+`manifest.json`, run `python3 scripts/bundle.py` to update the card's version
+marker. CI runs `python3 scripts/bundle.py --check` to verify the versions match.
 
 Each device gets a sensor named `Firemote apps <entity name>`. Discovery refreshes
 every six hours. Use `homeassistant.update_entity` on that sensor to refresh after
@@ -164,3 +170,12 @@ After updating, reload the dashboard and verify that its resource is
 `/firemote/frontend/HA-Firemote.js`, with any old HACS dashboard resource removed.
 Existing launcher selections made from the raw process list may need reselecting
 from the installed-app catalog.
+
+## Frontend update verification
+
+The card editor shows **Firemote frontend <version>** at the top. This identifies
+loaded JavaScript independently of the integration version displayed by HACS.
+After updating, fully reload the dashboard tab (Ctrl+Shift+R); reopening the card
+editor or restarting Home Assistant does not replace JavaScript already loaded
+in an open tab. Keep the stable `/firemote/frontend/HA-Firemote.js` resource URL.
+You do not need to re-add the resource on each update.

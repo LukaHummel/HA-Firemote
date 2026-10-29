@@ -6,6 +6,20 @@ These tests do not connect to Home Assistant or send commands to real devices.
 
 Run `node tests/run-viewport-scaling.mjs` for viewport height and width scaling checks, proportions across seven remote styles, launcher rows, resize handling, switching modes, editor configuration, and disconnect/reconnect cleanup. The same Chromium setup applies.
 
+Additional frontend regressions use the same runner:
+
+```sh
+node tests/run.mjs catalog-layout.html
+node tests/run.mjs editor.html
+node tests/run.mjs commands.html
+```
+
+These cover shared catalog indexes and invalidation, saved launcher compatibility,
+layout sizing, safe custom labels, editor selections and render immutability,
+and click/hold cancellation and device command dispatch. The command tests use
+controlled timers so they can check repeated holds and cleanup without sending
+commands to a real device.
+
 Run `python3 -m unittest discover -s tests -p 'test_*.py'` for companion backend
 catalog tests. These use a mocked ADB transport and APK extractor to verify
 system-app filtering, launcher filtering, display names, caching across restarts,
@@ -17,10 +31,13 @@ It has been checked with Androguard's `tests/data/APK/hello-world.apk` fixture,
 resolving `HelloWorld` and a PNG icon. Live Home Assistant/TV verification remains
 necessary; mocked transport tests do not certify device compatibility.
 
-`python3 scripts/bundle.py --check` checks that the integration's frontend matches
-`dist`. The Python suite also builds an archive in a temporary directory and
-checks all runtime files are included, without Python caches. After frontend
-edits, run `python3 scripts/bundle.py` before running the browser tests.
+Edit frontend files directly in `custom_components/firemote_apps/frontend/`;
+the browser tests load those same files, with no copy or build step.
+`python3 scripts/bundle.py --check` checks that the frontend version matches
+`manifest.json`. After changing the manifest version, run
+`python3 scripts/bundle.py` to update the frontend version marker. The Python
+suite also builds an archive in a temporary directory and checks all runtime
+files are included, without Python caches.
 
 The setup-flow tests additionally need Home Assistant. To run them in isolation:
 

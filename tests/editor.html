@@ -1,0 +1,182 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firemote editor regression tests</title>
+<pre id="results">Running…</pre>
+<script type="module">
+import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
+import { devices } from '../custom_components/firemote_apps/frontend/supported-devices.js';
+
+const assertions = [];
+const results = document.querySelector('#results');
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+  assertions.push(message);
+}
+const state = name => ({ state: 'on', attributes: { friendly_name: name, source_list: ['YouTube'] } });
+const platforms = { apple: 'apple_tv', roku: 'roku', android: 'androidtv_remote' };
+const entities = {};
+const states = {};
+for (const [name, platform] of Object.entries(platforms)) {
+  entities[`media_player.${name}`] = { platform: name === 'android' ? 'androidtv' : platform };
+  states[`media_player.${name}`] = state(`${name} player`);
+  for (const suffix of ['a', 'b']) {
+    entities[`remote.${name}_${suffix}`] = { platform };
+    states[`remote.${name}_${suffix}`] = state(`${name} remote ${suffix}`);
+  }
+}
+const hass = { config: { language: 'en' }, entities, states };
+const config = { device_family: 'amazon-fire', device_type: 'fire_tv_4_series', entity: 'media_player.android' };
+const editor = document.createElement('firemote-card-editor');
+editor.hass = hass;
+editor.setConfig(config);
+document.body.append(editor);
+try {
+  await editor.updateComplete;
+  let events = 0;
+  let emitted;
+  editor.addEventListener('config-changed', event => { events++; emitted = event.detail.config; });
+  for (const [family, name, key] of [
+    ['apple-tv', 'apple', 'apple_tv_remote_entity'],
+    ['roku', 'roku', 'roku_remote_entity'],
+    ['chromecast', 'android', 'android_tv_remote_entity'],
+  ]) {
+    const data = devices[family];
+    const model = Object.entries(data).filter(([category]) => category !== 'meta')
+      .flatMap(([, entries]) => Object.entries(entries)).find(([, attributes]) => attributes.supported)[0];
+    const selected = `remote.${name}_b`;
+    editor.setConfig({ ...config, device_family: family, device_type: model, entity: `media_player.${name}`,
+      android_tv_remote_entity: 'remote.android_a', [key]: selected });
+    await editor.updateComplete;
+    const select = editor.shadowRoot.querySelector(`#${key}`);
+    check(select.value === selected, `${family} editor retains its own saved associated remote`);
+    check(select.options.length === 3, `${family} lists only its platform's remotes plus an empty option`);
+    check(editor.shadowRoot.querySelector('#entity').value === `media_player.${name}`, `${family} retains the saved media player`);
+    const before = events;
+    select.value = `remote.${name}_a`;
+    select.dispatchEvent(new Event('change'));
+    select.dispatchEvent(new Event('focusout'));
+    await editor.updateComplete;
+    check(events === before + 1 && emitted[key] === `remote.${name}_a`, `${family} remote edits emit one correctly named setting`);
+    editor.hass = { ...hass, states: { ...states, [`remote.${name}_a`]: undefined } };
+    await editor.updateComplete;
+    check(editor.shadowRoot.querySelector(`#${key}`).value === '', `${family} falls back to empty when its remote state disappears`);
+    check(editor._config[key] === `remote.${name}_a`, `${family} rendering does not erase an unavailable saved remote`);
+    editor.hass = hass;
+  }
+
+  for (const [family, data] of Object.entries(devices)) {
+    if (family === 'none') continue;
+    for (const [category, entries] of Object.entries(data)) {
+      if (category === 'meta') continue;
+      for (const [model, attributes] of Object.entries(entries)) {
+        if (!attributes.supported) continue;
+        editor.setConfig({ ...config, device_family: family, device_type: model });
+        await editor.updateComplete;
+        const select = editor.shadowRoot.querySelector('#device_type');
+        check(select.value === model && !select.querySelector('option[value=""]'), `saved device model remains selected without a placeholder: ${model}`);
+      }
+    }
+  }
+  editor.setConfig({ ...config, device_type: 'unknown-model' });
+  await editor.updateComplete;
+  const modelSelect = editor.shadowRoot.querySelector('#device_type');
+  check(modelSelect.value === '' && modelSelect.querySelectorAll('option[value=""]').length === 1,
+    'unknown models get one placeholder for the entire family');
+
+  // Every editor dropdown must share the bounded listbox, including long app
+  // and entity lists inside Home Assistant's narrow, scrolling dialog column.
+  const apps = Array.from({ length: 60 }, (_, i) => ({ id: `package.${i}`, name: `App ${i} & <literal>` }));
+  const manyStates = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`media_player.extra_${i}`, state(`Player ${i}`)]));
+  const manyEntities = Object.fromEntries(Object.keys(manyStates).map(id => [id, { platform: 'androidtv' }]));
+  editor.hass = { ...hass, entities: { ...entities, ...manyEntities }, states: { ...states, ...manyStates,
+    'sensor.apps': { state: '60', attributes: { firemote_entity: config.entity, apps } } } };
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL2', app_launch_1: 'source:package.59' });
+  await editor.updateComplete;
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'width:280px;height:260px;overflow:auto';
+  document.body.append(dialog);
+  dialog.append(editor);
+  let dropdowns = [...editor.shadowRoot.querySelectorAll('select')];
+  check(dropdowns.length > 10 && dropdowns.every(select => select.size > 1 && select.closest('details.editorDropdown')),
+    'every editor dropdown uses the shared bounded menu');
+  check(editor.shadowRoot.querySelector('#device_type optgroup'), 'device model categories are preserved');
+  check(editor.shadowRoot.querySelector('#device_type option:disabled'), 'unsupported models remain disabled');
+  for (const select of dropdowns) {
+    const menu = select.closest('details');
+    menu.open = true;
+    const bounds = select.getBoundingClientRect();
+    check(bounds.height > 0 && bounds.height <= Math.min(256, innerHeight * .4) + 1 && bounds.width <= 280,
+      `menu fits a narrow dialog and viewport: ${select.name}`);
+    select.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check(!menu.open && editor.shadowRoot.activeElement === menu.querySelector('summary'),
+      `Escape closes the correct menu and restores focus: ${select.name}`);
+  }
+  const appSelect = editor.shadowRoot.querySelector('#app_launch_1');
+  check(appSelect.value === 'source:package.59' && appSelect.options.length === 61,
+    'long app lists retain saved selections and all choices');
+  const appMenu = appSelect.closest('details');
+  appMenu.open = true;
+  check(appSelect.scrollHeight > appSelect.clientHeight, 'long app list scrolls internally');
+  appSelect.value = 'source:package.0';
+  const beforeApp = events;
+  appSelect.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(events === beforeApp + 1 && emitted.app_launch_1 === 'source:package.0' &&
+    appMenu.querySelector('summary').textContent.includes('App 0 & <literal>'),
+    'app selection updates config once and displays literal app names');
+  appSelect.options[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  check(!appMenu.open, 'app pointer selection closes its own menu');
+  appMenu.open = true;
+  appSelect.focus();
+  editor.shadowRoot.querySelector('#name_position').closest('details').querySelector('summary').focus();
+  check(!appMenu.open, 'leaving a dropdown closes its list');
+  document.body.append(editor);
+  dialog.remove();
+  editor.hass = hass;
+
+  const partial = { defaultRemoteStyle_override: 'AL2' };
+  editor.setConfig(partial);
+  check(editor._config.device_family === 'amazon-fire' && editor._config.app_launcher_relative_size === 0,
+    'editor defaults are normalized before rendering');
+  check(!Object.hasOwn(partial, 'device_family') && !Object.hasOwn(partial, 'app_launcher_relative_size'),
+    'normalization preserves the configuration supplied by Home Assistant');
+  Object.freeze(editor._config);
+  await editor.updateComplete;
+  const normalized = JSON.stringify(editor._config);
+  editor.requestUpdate();
+  await editor.updateComplete;
+  check(JSON.stringify(editor._config) === normalized, 'repeated rendering leaves normalized configuration unchanged');
+
+  editor.setConfig({ ...config, device_family: 'none', apple_tv_remote_entity: 'remote.apple_b',
+    android_tv_remote_entity: 'remote.android_b', roku_remote_entity: 'remote.roku_b' });
+  Object.freeze(editor._config);
+  await editor.updateComplete;
+  check(editor._config.entity === 'none' && editor._config.device_type === 'other' &&
+    !['apple_tv_remote_entity', 'android_tv_remote_entity', 'roku_remote_entity'].some(key => Object.hasOwn(editor._config, key)),
+    'button-only configs normalize stale remote fields before rendering');
+  check(!editor.shadowRoot.querySelector('#entity') && !editor.shadowRoot.querySelector('#device_type'),
+    'button-only editors omit entity and device selectors');
+
+  editor.setConfig({ ...config, defaultRemoteStyle_override: 'AL2' });
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#dpad_style'), 'DPad setting has a valid selector ID');
+  editor.setConfig({ ...config, app_launch_1: 'source:%ZZ' });
+  editor.hass = { ...hass, states: { ...states, 'sensor.apps': { state: '1', attributes: {
+    firemote_entity: config.entity, apps: [{ id: '%ZZ', name: 'Malformed escape & <name>' }]
+  } } } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#app_launch_1').value === 'source:%25ZZ',
+    'malformed legacy source escapes resolve safely to the matching package');
+  check(editor.shadowRoot.querySelector('#app_launch_1 option[value="source:%25ZZ"]').textContent === 'Malformed escape & <name>',
+    'app labels remain literal text after safe source resolution');
+  editor.setConfig({ ...config, device_family: 'unknown-family' });
+  Object.freeze(editor._config);
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('#device_type'), 'unknown device families remain editable without render failures');
+  results.textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, checks: assertions }, null, 2);
+} catch (error) {
+  results.textContent = JSON.stringify({ status: 'failed', error: error.stack, checks: assertions }, null, 2);
+} finally {
+  editor.remove();
+}
+</script>

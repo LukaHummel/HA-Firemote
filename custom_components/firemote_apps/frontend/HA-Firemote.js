@@ -1,9 +1,13 @@
 const HAFiremoteVersion = 'v4.1.9';
+const FiremoteFrontendVersion = '0.2.5';
 
-import {LitElement, html, css, unsafeHTML, unsafeCSS, styleMap, repeat} from './lit/lit-all.min.js';
-import {launcherData, launcherCSS} from "./launcher-buttons.js?version=v4.1.9";
+import {LitElement, html, css, unsafeHTML, styleMap, repeat} from './lit/lit-all.min.js';
+import {launcherData} from "./launcher-buttons.js?version=v4.1.9";
 import {rosettaStone} from './language-translations.js?version=v4.1.9';
 import {devices} from './supported-devices.js?version=v4.1.9';
+import {remoteStyles} from './remote-styles.js';
+import {appCatalogState, deviceApps, resolveDeviceApp, decodeSource} from './app-catalog.js';
+import {remoteDimensions, calculateLayoutCellHeight, calculateLayoutCellWidth, calculateMasonryViewHeight} from './remote-layouts.js';
 
 console.groupCollapsed("%c 🔥 FIREMOTE-CARD 🔥 %c "+HAFiremoteVersion+" installed ", "color: orange; font-weight: bold; background: black", "color: green; font-weight: bold;"),
 console.log("Readme:", "https://github.com/PRProd/HA-Firemote"),
@@ -23,31 +27,6 @@ const fireEvent = (node, type, detail, options) => {
 }
 
 
-// A companion sensor associates its catalog with the configured ADB entity.
-function appCatalogState(hass, config) {
-  const states = hass?.states || {};
-  const valid = state => state && typeof state.attributes?.firemote_entity === 'string' && Array.isArray(state.attributes.apps);
-  const catalogs = Object.values(states).filter(valid);
-  const exact = catalogs.find(state => state.attributes.firemote_entity === config?.entity);
-  if (exact) return exact;
-  const deviceId = hass?.entities?.[config?.entity]?.device_id;
-  if (!deviceId) return;
-  const matches = catalogs.filter(state => hass.entities[state.attributes.firemote_entity]?.device_id === deviceId);
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
-function deviceApps(hass, config) {
-  const catalog = appCatalogState(hass, config);
-  if (catalog) {
-    if (['unavailable', 'unknown'].includes(catalog.state)) return [];
-    return catalog.attributes.apps.filter(app => typeof app.id === 'string' && app.id && typeof app.name === 'string');
-  }
-  if (!['apple-tv', 'roku'].includes(config?.device_family)) return null;
-  const sources = hass?.states[config?.entity]?.attributes.source_list;
-  return Array.isArray(sources) ? [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
-    .map(source => ({ id: source, name: source })) : null;
-}
-
 // Process the imported data
 const devicemap = new Map(Object.entries(devices));
 const baseAppMap = new Map(Object.entries(launcherData));
@@ -61,6 +40,16 @@ const appButtonMax = { "AF4":  6, "AF5":  6, "AF6":  6, "AFJTV": 6, "AFXF2": 6, 
                        "RTR":  8, "RWR": 10, "RVR": 10, "RSR":  10, "XM1":  10, "XM2": 10, "HO1":   6, "HO2":  8,
                        "HO3":  6, "HO4":  6, "AL1": baseAppMap.size,  "AL2": baseAppMap.size,};
 
+
+// Keep malformed slot indices from creating unbounded DOM. Preserve the legacy
+// maximum while rendering only configured positions (plus an editor spare).
+function launcherSlotCount(config, spare = 0) {
+  const last = Object.entries(config).reduce((max, [key, value]) => {
+    const match = /^app_launch_(\d+)$/.exec(key);
+    return match && value ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return Math.min(appButtonMax.AL1, Math.max(6, last + spare));
+}
 
 // Device definitions are static: index them once rather than traversing the
 // complete catalog for every attribute in every render and button press.
@@ -83,7 +72,7 @@ function deviceAttributeQuery(deviceAttribute, configvar) {
 }
 
 function truncate(str, length) {
-  return str.length > length ? str.substr(0, length) : str;
+  return String(str).slice(0, length);
 }
 
 
@@ -113,36 +102,33 @@ function handlehdmi(appmap, config, inputs = 0) {
 
 
 function handlecustomlaunchers(appmap, config) {
-    // Experimental - Only one of them works through the roku api for some reason ///
-//    if (config.device_family == "roku") {
-//        appmap.set("roku-secret-screen", {"button": "Secret", "friendlyName": "Function: Secret Screen 1"});
-//    }
+  const configured = config.custom_launchers;
+  if (!configured) return;
+  const launchers = Array.isArray(configured) ? configured : [configured];
+  launchers.forEach((launcher, index) => {
+    if (!launcher || typeof launcher !== 'object') return;
+    const fallback = 'customlauncher ' + (index + 1);
+    const name = String(launcher.friendly_name || launcher.label || fallback);
+    const label = String(launcher.label || launcher.friendly_name || fallback);
+    const styles = { color: launcher.color, background: launcher.background };
+    const background = html`<div class="customLauncherBackground" style=${styleMap(styles)}></div>`;
+    const face = launcher.image_path
+      ? html`<img src=${launcher.image_path} alt=${label} class="customLauncherImg">`
+      : launcher.icon
+        ? html`<ha-icon icon=${launcher.icon} class="customLauncherIcon" style=${styleMap(styles)}></ha-icon>`
+        : html`<div class="customLauncherTxt" style=${styleMap(styles)}>${truncate(label, 10)}</div>`;
+    appmap.set('customlauncher ' + name, {
+      button: html`${background}${face}`,
+      friendlyName: 'Custom: ' + name,
+      script: launcher.script,
+      data: launcher.data,
+    });
+  });
+}
 
-    let customlaunchers = config.custom_launchers;
-    if(typeof customlaunchers == 'undefined' || customlaunchers == null) {
-      return;
-    }
-    if(customlaunchers.constructor !== Array) {
-      customlaunchers = new Array(config.custom_launchers);
-    }
-    var l = 1;
-    customlaunchers.forEach((launcher) => {
-       var style = ''; var icon = null; var imagePath = null;
-       if (launcher.color) { style = 'color:'+launcher.color+';'; }
-       if (launcher.background) { style = style+'background:'+launcher.background+';'; }
-       var friendlyname = launcher.friendly_name || launcher.label || "customlauncher "+l;
-       var label = launcher.label || launcher.friendly_name || "customlauncher "+l;
-       if (launcher.icon) {
-         icon = '<div class="customLauncherBackground" style="'+style+'"></div><ha-icon icon="'+launcher.icon+'" class="customLauncherIcon" style="'+style+'"></ha-icon>';
-       }
-       if (launcher.image_path) {
-         imagePath = '<div class="customLauncherBackground" style="'+style+'"></div><img src="'+launcher.image_path+'" alt="'+label+'" class="customLauncherImg">';
-       }
-       label = '<div class="customLauncherBackground" style="'+style+'"></div><div style="'+style+'" class="customLauncherTxt">'+truncate(label, 10)+'</div>';
-       var buttonFace = imagePath || icon || label
-       appmap.set("customlauncher "+friendlyname, {"button": buttonFace, "friendlyName": "Custom: "+friendlyname, "script": launcher.script, "data": launcher.data});
-       l++;
-    })
+// Static upstream SVGs are trusted markup; user-defined launchers use Lit values.
+function renderLauncherFace(face) {
+  return typeof face === 'string' ? unsafeHTML(face) : face;
 }
 
 function handleAVInputs(appmap, config, avInputs = 0) {
@@ -186,36 +172,6 @@ function getAppMap(config, forCommands = false) {
     }
     return cached[mode];
 }
-
-
-function calculateLayoutCellHeight(h, s) {
-    let numOfGapPixels = (( h / 56 ) * 8)-24;
-    let standardHeight = ( h - numOfGapPixels ) / 56;
-    let scale = s / 100;
-    let raw  = standardHeight * scale;
-    let calculated = Math.trunc(raw * Math.pow(10, 2)) / Math.pow(10, 2);
-    //console.log('scale is '+s+' so Im returning a cell height of '+calculated);
-    return calculated;
-}
-
-function calculateLayoutCellWidth(w, s) {
-    var medianCellWidth = 104; // between 80px and 120px depending on the screen size - adjust as needed
-    let numOfGapPixels = (( w / medianCellWidth ) * 8)-24;
-    let scale = s / 100;
-    let raw = ( (w - numOfGapPixels) / medianCellWidth) * scale;
-    let calculated = Math.ceil(raw);
-    //console.log('scale is '+s+' so Im returning a cell width of '+calculated+' raw was '+raw);
-    return calculated;
-}
-
-function calculateMasonryViewHeight(h, s) {
-    let scale = s / 100;
-    let raw = (h / 50) * scale;
-    let calculated = Math.ceil(raw);
-    //console.log('masonryViewHeight - scale is '+s+' so Im returning a cell width of '+calculated+' raw was '+raw);
-    return calculated;
-}
-
 
 
 class FiremoteCard extends LitElement {
@@ -272,6 +228,7 @@ class FiremoteCard extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this._cancelButtonInteraction();
     window.removeEventListener('resize', this._scheduleViewportScale);
     window.visualViewport?.removeEventListener('resize', this._scheduleViewportScale);
     this._scaleObserver?.disconnect();
@@ -362,74 +319,10 @@ class FiremoteCard extends LitElement {
     if (this._viewportScaling && this._scaledSize) {
       return calculateMasonryViewHeight(this._scaleLayoutHeight, 100);
     }
-    // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card#sizing-in-masonry-view
-    // TODO: This does not account for added app launcher rows
-    var scale = this._config.scale || 100;
-    switch (deviceAttributeQuery('defaultRemoteStyle', this._config)) {
-      case "AF1":
-        return calculateMasonryViewHeight(588.38, scale);
-        break;
-      case "AF2":
-        return calculateMasonryViewHeight(634.08, scale);
-        break;
-      case "AF3":
-        return calculateMasonryViewHeight(657.14, scale);
-        break;
-      case "AF4":
-        return calculateMasonryViewHeight(715.94, scale);
-        break;
-      case "AF5":
-        return calculateMasonryViewHeight(772.94, scale);
-        break;
-      case "AF6":
-        return calculateMasonryViewHeight(750.45, scale);
-        break;
-      case "AFJTV":
-      case "AFXF2":
-        return calculateMasonryViewHeight(873.02, scale);
-        break;
-      case "AR1":
-        return calculateMasonryViewHeight(747.5, scale);
-        break;
-      case "AR2":
-        return calculateMasonryViewHeight(597, scale);
-        break;
-      case "AR3":
-        return calculateMasonryViewHeight(737, scale);
-        break;
-      case "CC1":
-      case "CC2":
-      case "CC3":
-        return calculateMasonryViewHeight(696.66, scale);
-        break;
-      case "NS1":
-      case "NS2":
-        return calculateMasonryViewHeight(681.98, scale);
-        break;
-      case "ON1":
-      case "ON2":
-        return calculateMasonryViewHeight(726.39, scale);
-        break;
-      case "RVRP":
-      case "RVR":
-      case "RSR":
-        return calculateMasonryViewHeight(680.56, scale);
-        break;
-      case "RHR":
-      case "RWR":
-        return calculateMasonryViewHeight(652.56, scale);
-        break;
-      case "RTR":
-        return calculateMasonryViewHeight(680.38, scale);
-        break;
-      case "XM1":
-      case "XM2":
-        return calculateMasonryViewHeight(793.98, scale);
-        break;
-      default:
-        return;
-    }
+    const dimensions = remoteDimensions[deviceAttributeQuery('defaultRemoteStyle', this._config)];
+    if (dimensions) return calculateMasonryViewHeight(dimensions[1], this._config.scale || 100);
   }
+
   // Announces a default grid size for new experimental sections dashboard type
   getLayoutOptions() {
     if (this._viewportScaling && this._scaledSize) {
@@ -438,183 +331,30 @@ class FiremoteCard extends LitElement {
         grid_columns: calculateLayoutCellWidth(this._scaledSize.width, 100),
       };
     }
-    // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card#sizing-in-sections-view
-    // TODO: This does not account for added app launcher rows
-    var scale = this._config.scale || 100;
-    switch (deviceAttributeQuery('defaultRemoteStyle', this._config)) {
-      case "AF1":
-        return {
-          grid_rows: calculateLayoutCellHeight(588.38, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AF2":
-        return {
-          grid_rows: calculateLayoutCellHeight(634.08, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AF3":
-        return {
-          grid_rows: calculateLayoutCellHeight(657.14, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AF4":
-        return {
-          grid_rows: calculateLayoutCellHeight(715.94, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AF5":
-        return {
-          grid_rows: calculateLayoutCellHeight(772.94, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AF6":
-        return {
-          grid_rows: calculateLayoutCellHeight(750.45, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AFJTV":
-      case "AFXF2":
-        return {
-          grid_rows: calculateLayoutCellHeight(873.02, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "AR1":
-        return {
-          grid_rows: calculateLayoutCellHeight(747.5, scale),
-          grid_columns: calculateLayoutCellWidth(184, scale),
-        }
-        break;
-      case "AR2":
-        return {
-          grid_rows: calculateLayoutCellHeight(597, scale),
-          grid_columns: calculateLayoutCellWidth(184, scale),
-        }
-        break;
-      case "AR3":
-        return {
-          grid_rows: calculateLayoutCellHeight(737, scale),
-          grid_columns: calculateLayoutCellWidth(184, scale),
-        }
-        break;
-      case "CC1":
-      case "CC2":
-      case "CC3":
-        return {
-          grid_rows: calculateLayoutCellHeight(696.66, scale),
-          grid_columns: calculateLayoutCellWidth(203.36, scale),
-        }
-        break;
-      case "HO1":
-      case "HO2":
-        return {
-          grid_rows: calculateLayoutCellHeight(726.39, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "HO3":
-      case "HO4":
-        return {
-          grid_rows: calculateLayoutCellHeight(902.83, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      case "NS1":
-      case "NS2":
-        return {
-          grid_rows: calculateLayoutCellHeight(681.98, scale),
-          grid_columns: calculateLayoutCellWidth(137.97, scale),
-        }
-        break;
-      case "ON1":
-      case "ON2":
-        return {
-          grid_rows: calculateLayoutCellHeight(726.39, scale),
-          grid_columns: calculateLayoutCellWidth(137.97, scale),
-        }
-        break;
-      case "RVRP":
-      case "RVR":
-      case "RSR":
-        return {
-          grid_rows: calculateLayoutCellHeight(680.56, scale),
-          grid_columns: calculateLayoutCellWidth(183.8, scale),
-        }
-        break;
-      case "RHR":
-      case "RWR":
-        return {
-          grid_rows: calculateLayoutCellHeight(652.56, scale),
-          grid_columns: calculateLayoutCellWidth(183.8, scale),
-        }
-        break;
-      case "RTR":
-        return {
-          grid_rows: calculateLayoutCellHeight(680.38, scale),
-          grid_columns: calculateLayoutCellWidth(202.02, scale),
-        }
-        break;
-      case "XM1":
-      case "XM2":
-        return {
-          grid_rows: calculateLayoutCellHeight(793.98, scale),
-          grid_columns: calculateLayoutCellWidth(193.97, scale),
-        }
-        break;
-      default:
-        return {
-          //grid_rows: 12.25,
-          //grid_columns: 2,
-        };
-    }
+    const dimensions = remoteDimensions[deviceAttributeQuery('defaultRemoteStyle', this._config)];
+    if (!dimensions) return {};
+    const [width, height] = dimensions;
+    const scale = this._config.scale || 100;
+    return {
+      grid_rows: calculateLayoutCellHeight(height, scale),
+      grid_columns: calculateLayoutCellWidth(width, scale),
+    };
   }
 
-
-  // Returns a minimal configuration that will result in a working card
-  static getStubConfig(e) {
-    var androidTVEntities = Object.keys(e.entities).filter(
-        (eid) => e.entities[eid].platform === 'androidtv'
-    );
-    var appleTVEntities = Object.keys(e.entities).filter(
-        (eid) => e.entities[eid].platform === 'apple_tv'
-    );
-    var rokuEntities = Object.keys(e.entities).filter(
-        (eid) => e.entities[eid].platform === 'roku'
-    );
-    if (androidTVEntities.length > 0) {
-        return { 'entity': androidTVEntities[0],
-                 'device_family': 'amazon-fire',
-                 'device_type': 'fire_tv_4_series',
-                 'compatibility_mode': 'default',
-               };
+  // Prefer existing media players; remote entities are not valid card entities.
+  static getStubConfig(hass) {
+    const entities = Object.entries(hass.entities || {}).filter(([id]) =>
+      id.startsWith('media_player.') && hass.states?.[id]);
+    const defaults = [
+      ['androidtv', 'amazon-fire', 'fire_tv_4_series'],
+      ['apple_tv', 'apple-tv', 'appletv-4k-gen2'],
+      ['roku', 'roku', 'roku-ultra-2020'],
+    ];
+    for (const [platform, family, model] of defaults) {
+      const match = entities.find(([, entity]) => entity.platform === platform);
+      if (match) return { entity: match[0], device_family: family, device_type: model, compatibility_mode: 'default' };
     }
-    else if (appleTVEntities.length > 0) {
-        return { 'entity': appleTVEntities[0],
-                 'device_family': 'apple-tv',
-                 'device_type': 'appletv-4k-gen2',
-                 'compatibility_mode': 'default',
-               };
-    }
-    else if (rokuEntities.length > 0) {
-        return { 'entity': rokuEntities[0],
-                 'device_family': 'roku',
-                 'device_type': 'roku-ultra-2020',
-                 'compatibility_mode': 'default',
-               };
-    }
-    else {
-        return { 'entity': '',
-                 'device_family': 'amazon-fire',
-                 'device_type': 'fire_tv_4_series',
-                 'compatibility_mode': 'default',
-               };
-    }
+    return { entity: '', device_family: 'amazon-fire', device_type: 'fire_tv_4_series', compatibility_mode: 'default' };
   }
 
   setConfig(config) {
@@ -624,3001 +364,12 @@ class FiremoteCard extends LitElement {
     if (config.scale_mode && !['fixed', 'viewport-height', 'viewport-width'].includes(config.scale_mode)) {
       throw new Error('scale_mode must be fixed, viewport-height, or viewport-width');
     }
+    this._cancelButtonInteraction();
     this._scaledSize = undefined;
     this._config = config;
   }
 
-  static styles = css`
-          :host {
-            display: block;
-          }
-
-          .viewport-scale-frame {
-            display: flex;
-            width: 100%;
-          }
-
-          .viewport-scale-container {
-            flex-shrink: 0;
-            position: relative;
-            margin: auto;
-            overflow: clip;
-          }
-
-          .viewport-scale-content {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: max-content;
-            transform-origin: top left;
-          }
-
-
-          ha-card {
-            background: rgba(30,30,30,0);
-            display: grid;
-            justify-content: center;
-            padding: 0;
-            margin: auto;
-            box-shadow: none;
-            border: 0;
-            outline: 0;
-            isolation: isolate;
-            direction: ltr;
-            -webkit-tap-highlight-color: rgb(0 0 0 / 0%);
-          }
-
-          .hidden {
-            display: none !important;
-          }
-
-          .mdiSubstituteIconWrapper {
-            pointer-events: none;
-            transform: scale(var(--sz));
-          }
-
-          .mdiSubstitueIcon {
-            display: var(--ha-icon-display,inline-flex);
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            vertical-align: middle;
-            fill: var(--icon-primary-color,currentcolor);
-            width: var(--mdc-icon-size,24px);
-            height: var(--mdc-icon-size,24px);
-          }
-
-          .shield-remote-body {
-            background: linear-gradient(90deg, rgba(22,21,21,1) 0%, rgba(37,37,37,1) 10%, rgba(37,37,37,1) 90%, rgba(22,21,21,1) 100%);
-            border: solid #252525 calc(var(--sz) * 0.14rem);
-            padding: calc(var(--sz) * 1.428rem) calc(var(--sz) * 0.714rem) calc(var(--sz) * 2.143rem) calc(var(--sz) * 0.714rem);
-            display: grid;
-            justify-items: center;
-            align-content: flex-start;
-            grid-column-gap: calc(var(--sz) * 1.2rem);
-            grid-row-gap: calc(var(--sz) * 0.5rem);
-            grid-template-columns: 1fr 1fr;
-            width: calc(var(--sz) * 8.286rem);
-            min-height: calc(var(--sz) * 45rem);
-          }
-
-          .shield-remote-body.ns1-body {
-            background: linear-gradient(90deg, rgb(28 28 28) 0%, rgb(37, 37, 37) 8%, rgb(40 40 40) 50%, rgb(37, 37, 37) 92%, rgb(28, 28, 28) 100%);
-            border: solid #1c1c1c calc(var(--sz) * 0.14rem);
-            border-radius: calc(var(--sz) * 1.2rem);
-          }
-
-          .roku-remote-body {
-            display: flex;
-            flex-direction: column;
-            align-content: center;
-            justify-content: flex-start;
-            align-items: center;
-            gap: calc(var(--sz) * 1rem);
-            background: linear-gradient(90deg, rgba(42,42,42,1) 0%, rgba(58,58,58,1) 50%, rgba(42,42,42,1) 100%);
-            border-radius: calc(var(--sz) * 3.25rem);
-            border: solid #252525 calc(var(--sz) * 0.6rem);
-            border-top: solid #292929 calc(var(--sz) * 0.6rem);
-            width: calc(var(--sz) * 11.287rem);
-            padding: calc(var(--sz) * 0.35rem);
-            padding-bottom: calc(var(--sz) * 1.12rem);
-            min-height: calc(var(--sz) * 44rem);
-          }
-
-          .roku-remote-body:has(div.rokuTag) {
-            margin-bottom: calc(var(--sz) * 2rem);
-          }
-
-          .roku-remote-body ha-icon {
-            transform: scale(calc(var(--sz) * .8));
-          }
-
-          .roku-remote-body > div {
-            display: flex;
-            flex-wrap: nowrap;
-            flex-direction: row;
-            align-content: center;
-            justify-content: center;
-            align-items: center;
-            gap: calc(var(--sz) * 0.35rem);
-          }
-
-          .roku-remote-body > div:not(.rokuDPadContainer) > button:active {
-            box-shadow: none !important;
-            transform: scale(0.975);
-            transform-origin: center bottom;
-          }
-
-          .roku-remote-body > div:not(.rokuDPadContainer) > button:active > ha-icon {
-            transform: scale(0.8);
-          }
-
-          .roku-remote-body.RVR > div.powerRow {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            align-items: center;
-            justify-items: center;
-            margin-bottom: calc(var(--sz) * 1rem);
-          }
-
-          .roku-remote-body.RTR {
-              border-radius: calc(var(--sz) * 6rem);
-              padding: calc(var(--sz) * 1rem);
-          }
-
-          .roku-remote-body.RWR > div.powerRow,
-          .roku-remote-body.RTR > div.powerRow,
-          .roku-remote-body.RHR > div.powerRow {
-            margin-bottom: calc(var(--sz) * 1.25rem);
-          }
-
-          .roku-remote-body > div.micRow {
-            height: calc(var(--sz) * 0.4rem);
-            aspect-ratio: 1;
-            background: black;
-            border-radius: 100%;
-            margin-top: calc(var(--sz) * 0.4rem);
-          }
-
-          .roku-remote-body.RVR div.micRow {
-            height: calc(var(--sz) * 0.4rem);
-            aspect-ratio: 1;
-            background: black;
-            border-radius: 100%;
-          }
-
-          .roku-remote-body.RSR > div.backHomeRow {
-            padding-top: calc(var(--sz) * 5rem);
-          }
-
-          .roku-remote-body > div.backHomeRow > button{
-            height: calc(var(--sz) * 2.5rem);
-            width: calc(var(--sz) * 5.25rem);
-            border: solid #090909 calc(var(--sz) * 0.125rem);
-            border-radius: calc(var(--sz) * 0.7rem);
-            box-shadow: 0px 5px 2px 0px #0000001a;
-          }
-
-          .roku-remote-body > div.rokuDPadContainer {
-            background: linear-gradient(175deg, rgb(42 42 42) 0%, rgb(51 51 51) 100%);
-            padding: calc(var(--sz) * 0.3rem);
-            border-radius: calc(var(--sz) * 1.5rem);
-            display: grid;
-            grid-template-columns: 31% 38% 31%;
-            grid-template-rows: 31% 38% 31%;
-            grid-gap: 0;
-            width: calc(var(--sz) * 10.15rem);
-            height: calc(var(--sz) * 10.15rem);
-            overflow: hidden;
-          }
-
-          .roku-remote-body.RTR > div.rokuDPadContainer {
-            padding: calc(var(--sz) * 0.75rem);
-            border-radius: 100%;
-          }
-
-          .rokuDPadContainer > button {
-            background: #662d91;
-            color: rgb(198, 198, 198);
-            height: 100%;
-            width: 100%;
-            margin: 0;
-            cursor: pointer;
-            line-height: normal;
-            user-select: none;
-            display: grid;
-            place-content: center;
-            border: 0;
-            aspect ratio: 1;
-            font-size: calc(var(--sz) * 1.275rem);
-            position: relative;
-            z-index: 2;
-          }
-
-          .rokuDPadContainer > button > ha-icon {
-            transform: scale(calc(var(--sz) * 1.3));
-          }
-
-          .rokuDPadContainer > button:active > ha-icon, .rokuDPadContainer > button:active > .okCircle {
-            color: #bcbcbc;
-            transform: scale(calc(var(--sz) * 0.85));
-          }
-
-          .roku-remote-body #up-button {
-            transform-origin: bottom center;
-            border-radius: calc(var(--sz) * 1rem) calc(var(--sz) * 1rem) 0 0;
-            position: relative;
-          }
-
-          .roku-remote-body #left-button {
-            transform-origin: center right;
-            border-radius: calc(var(--sz) * 1rem) 0 0 calc(var(--sz) * 1rem);
-            box-shadow: 0px 5px 2px 0px #0000001a;
-          }
-
-          .roku-remote-body #right-button {
-            border-radius: 0 calc(var(--sz) * 1rem) calc(var(--sz) * 1rem) 0;
-            transform-origin: center left;
-            box-shadow: 0px 5px 2px 0px #0000001a;
-            z-index: 1;
-          }
-
-          .roku-remote-body #down-button {
-            transform-origin: top center;
-            border-radius: 0 0 calc(var(--sz) * 1rem) calc(var(--sz) * 1rem);
-            box-shadow: 0px 5px 2px 0px #0000001a;
-          }
-
-          .roku-remote-body #center-button {
-            z-index: 3;
-          }
-
-          .roku-remote-body #up-button::before {
-            content: '';
-            position: absolute;
-            margin: 0;
-            padding: 0;
-            bottom: 0;
-            left: calc(var(--sz) * -1.95rem);
-            border-radius: 100%;
-            height: calc(var(--sz) * 2rem);
-            width: calc(var(--sz) * 2rem);
-            background: transparent;
-            box-shadow: calc(var(--sz) * 1rem) calc(var(--sz) * 1rem) 0 rgb(102, 45, 145);
-          }
-
-          .roku-remote-body #up-button::after {
-            content: '';
-            position: absolute;
-            margin: 0;
-            padding: 0;
-            bottom: 0;
-            right: calc(var(--sz) * -1.95rem);
-            border-radius: 100%;
-            height: calc(var(--sz) * 2rem);
-            width: calc(var(--sz) * 2rem);
-            background: transparent;
-            box-shadow: calc(var(--sz) * -1rem) calc(var(--sz) * 1rem) 0 rgb(102, 45, 145);
-          }
-
-          .roku-remote-body #down-button::before {
-            content: '';
-            position: absolute;
-            margin: 0;
-            padding: 0;
-            top: 0;
-            left: calc(var(--sz) * -1.95rem);
-            border-radius: 100%;
-            height: calc(var(--sz) * 2rem);
-            width: calc(var(--sz) * 2rem);
-            background: transparent;
-            box-shadow: calc(var(--sz) * 1rem) calc(var(--sz) * -1rem) 0 rgb(102, 45, 145);
-          }
-
-          .roku-remote-body #down-button::after {
-            content: '';
-            position: absolute;
-            margin: 0;
-            padding: 0;
-            top: 0;
-            right: calc(var(--sz) * -1.95rem);
-            border-radius: 100%;
-            height: calc(var(--sz) * 2rem);
-            width: calc(var(--sz) * 2rem);
-            background: transparent;
-            box-shadow: calc(var(--sz) * -1rem) calc(var(--sz) * -1rem) 0 rgb(102, 45, 145);
-          }
-
-          .rokuDPadContainer > button:not(#center-button):active {
-            box-shadow: unset;
-            transform: scale(0.98);
-          }
-
-          .okCircle {
-            padding: calc(var(--sz) * .75rem);
-            border-radius: 100%;
-            border: calc(var(--sz) * 0.15rem) solid rgb(88 38 125);
-            background: linear-gradient(175deg, rgb(165 165 165 / 20%) 10%, rgb(29 29 29 / 20%) 100%);
-            margin: 0;
-            place-self: center;
-            display: flex;
-            place-content: center;
-            align-items: center;
-            user-select: none;
-            pointer-events: none;
-            aspect-ratio: 1/1;
-            overflow: hidden;
-          }
-
-          .rokuDPadContainer > button:active > .okCircle {
-            color: #bcbcbc;
-            transform: scale(calc(var(--sz) * 0.8));
-            filter: brightness(0.9);
-          }
-
-          .roku-remote-body > div.replayVoiceOptionsRow,
-          .roku-remote-body > div.scrubRow,
-          .roku-remote-body > div.personalShortcutsRow {
-            width: calc(var(--sz) * 10.15rem);
-            display: grid;
-            grid-template-columns: 35% 22% 35%;;
-            justify-content: center;
-            place-content: center space-between;
-            place-items: center;
-            justify-items: stretch;
-            align-items: center;
-          }
-
-          .roku-remote-body.RVR > div.replayVoiceOptionsRow {
-            grid-template-columns: 25% 38% 25%;
-          }
-
-          .roku-remote-body.RSR > div.replayVoiceOptionsRow,
-          .roku-remote-body.RTR > div.replayVoiceOptionsRow {
-            grid-template-columns: 47% 47%;
-          }
-
-          .roku-remote-body > div.replayVoiceOptionsRow button,
-          .roku-remote-body > div.scrubRow button,
-          .roku-remote-body > div.personalShortcutsRow button {
-            height: calc(var(--sz) * 2.25rem);
-            width: 100%;
-            border: solid #090909 calc(var(--sz) * 0.125rem);
-            border-radius: calc(var(--sz) * 0.7rem);
-            box-shadow: 0px 5px 2px 0px #0000001a;
-          }
-
-          .roku-remote-body > div.scrubRow {
-            grid-template-columns: 22% 48% 22%;
-          }
-
-          .roku-remote-body.RVR > div.scrubRow,
-          .roku-remote-body.RSR > div.scrubRow,
-          .roku-remote-body.RWR > div.scrubRow {
-            margin-bottom: calc(var(--sz) * 0.75rem);
-          }
-
-          .roku-remote-body > div.scrubRow button {
-            height: calc(var(--sz) * 3rem);
-          }
-
-          .roku-remote-body > div.personalShortcutsRow {
-            grid-template-columns: 31% 31%;
-            gap: calc(var(--sz) * 1.75rem);
-            justify-content: center;
-            padding: calc(var(--sz) * 0.3rem) 0 calc(var(--sz) * 0.6rem) 0;
-          }
-
-          .roku-remote-body > div.personalShortcutsRow > button > ha-icon {
-            transform: scale(var(--sz));
-          }
-
-          .roku-remote-body .appLauncherAppsContainer {
-            display: grid;
-            grid-template-columns: 50% 50%;
-            grid-row-gap: calc(var(--sz) * 1rem);
-            align-items: center;
-            justify-items: center;
-            justify-content: center;
-            align-content: center;
-          }
-
-          .roku-remote-body.RHR .appLauncherAppsContainer {
-            padding: calc(var(--sz) * 1rem) 0 calc(var(--sz) * 4rem) 0;
-          }
-
-          .roku-remote-body.RWR .appLauncherAppsContainer {
-            padding-bottom: calc(var(--sz) * 6rem);
-          }
-
-          .roku-remote-body .appLauncherAppsContainer > button {
-            height: calc(var(--sz) * 1.8rem);
-            width: calc(var(--sz) * 5.1426rem);
-            border-radius: calc(var(--sz) * 0.7rem);
-            box-sizing: border-box;
-            align-items: center;
-          }
-
-          .roku-remote-body .appLauncherVerticalAppsContainer {
-            display: grid;
-            margin-top: calc(var(--sz) * 1.25rem);
-            gap: calc(var(--sz) * 1rem);
-          }
-
-          .rokuBrandLogo {
-            padding: calc(var(--sz) * 1rem) 0;
-          }
-
-          .RHR .rokuBrandLogo,
-          .RWR .rokuBrandLogo {
-            position: absolute;
-            bottom: calc(var(--sz) * 2rem);
-          }
-
-          .RTR .rokuBrandLogo {
-            padding: calc(var(--sz) * 1rem) 0 calc(var(--sz) * 2.25rem) 0;
-          }
-
-          .rokuBrandLogo svg {
-            height: calc(var(--sz) * 1.15rem);
-            max-width: calc(var(--sz) * 11.287rem);
-          }
-
-          .RHR .rokuBrandLogo svg {
-            height: calc(var(--sz) * 0.8rem);
-          }
-
-          .RWR .rokuBrandLogo svg {
-            height: calc(var(--sz) * 3.1rem);
-          }
-
-          .roku-remote-body .rokuTag {
-            position: absolute;
-            height: calc(var(--sz) * 2.2rem);
-            width: calc(var(--sz) * 5.6rem);
-            background: repeating-linear-gradient(#662D91, #662D91 calc(var(--sz) * 0.15rem), #3b1955 calc(var(--sz) * 0.15rem), #3b1955 calc(var(--sz) * 0.3rem));
-            bottom: 0;
-            overflow: hidden;
-            box-sizing: border-box;
-            padding: calc(var(--sz) * 1.1rem);
-            border: solid #662d91 calc(var(--sz) * 0.1rem);
-            border-top: none;
-            border-bottom: none;
-            -webkit-clip-path: polygon(7% 5%, 93% 5%, 100% 0, 100% 100%, 0 100%, 0 0);
-            clip-path: polygon(7% 5%, 93% 5%, 100% 0, 100% 100%, 0 100%, 0 0);
-          }
-
-          .chromecast-remote-body {
-            background: #ebebea;
-            border-radius: calc(var(--sz) * 6rem);
-            border: solid #cfcfcf calc(var(--sz) * 0.1rem);
-            width: calc(var(--sz) * 11.287rem);
-            padding: calc(var(--sz) * 0.35rem);
-            padding-bottom: calc(var(--sz) * 4rem);
-            display: grid;
-            justify-items: center;
-            align-content: flex-start;
-            grid-column-gap: calc(var(--sz) * 1.2rem);
-            grid-row-gap: calc(var(--sz) * 0.6rem);
-            grid-template-columns: 1fr 1fr;
-            min-height: calc(var(--sz) * 37rem);
-          }
-
-          .chromecast-remote-body.CC2 {
-            background: #cad4d8;
-          }
-
-          .chromecast-remote-body.CC3 {
-            background: #e1d2cc;
-          }
-
-          .apple-remote-body {
-            background: #b5b5b5;
-            background: linear-gradient(0deg, rgba(147,148,150,1) 0%, rgba(207,211,213,1) 100%);
-            border: solid #d1d1d1 calc(var(--sz) * 0.05rem);
-            border-radius: calc(var(--sz) * 1.75rem);
-            display: grid;
-            justify-items: center;
-            align-content: flex-start;
-            grid-column-gap: calc(var(--sz) * 1rem);
-            grid-row-gap: calc(var(--sz) * 0.5rem);
-            grid-template-columns: 1fr 1fr;
-            width: calc(var(--sz) * 13rem);
-            min-height: calc(var(--sz) * 51rem);
-            padding-bottom: calc(var(--sz) * 1.5rem);
-          }
-
-          .apple-remote-body.AR1 {
-            padding-top: calc(var(--sz) * 4.75rem);
-            min-height: calc(var(--sz) * 47rem);
-            grid-column-gap: calc(var(--sz) * 0.25rem);
-            grid-row-gap: calc(var(--sz) * 0.75rem);
-            font-size: calc(var(--sz) * 1rem);
-          }
-
-          .apple-remote-body.AR2 {
-            background: linear-gradient(30deg, rgb(0, 0, 0) 0%, rgb(41, 41, 41) 70%);
-            display: grid;
-            grid-template-columns: 1fr;
-            grid-template-rows: auto 1fr;
-            grid-row-gap: 0;
-            border: solid #2d2d2d calc(var(--sz) * 0.01rem);
-            min-height: calc(var(--sz) * 41rem);
-            overflow: hidden;
-          }
-
-          .AR2TopSection, .AR2BottomSection {
-            display: grid;
-            justify-items: center;
-            align-content: flex-start;
-            grid-column-gap: calc(var(--sz) * 1.5rem);
-            grid-row-gap: calc(var(--sz) * 0.5rem);
-            grid-template-columns: 1fr 1fr;
-            box-sizing: border-box;
-          }
-
-          .AR2TopSection {
-            background: linear-gradient(0deg, rgba(46,46,46,1) 0%, rgba(59,59,59,1) 100%);
-            height: 100%;
-            width: 100%;
-            padding-bottom: calc(var(--sz) * 0.25rem);
-          }
-
-          .AR2BottomSection {
-            padding-top: calc(var(--sz) * 0.5rem);
-          }
-
-          .apple-remote-body.AR2 > div > button:nth-of-type(odd), .apple-remote-body.AR3 > button:nth-of-type(odd) {
-            justify-self: self-end;
-            transform-origin: center center;
-          }
-
-          .apple-remote-body.AR2 > div > button:nth-of-type(even), .apple-remote-body.AR3 > button:nth-of-type(even) {
-            justify-self: self-start;
-            transform-origin: center center;
-          }
-
-          .remote-body {
-            background: linear-gradient(90deg, rgba(27,27,27,1) 0%, rgba(37,37,37,1) 8%, rgba(55,55,55,1) 50%,
-                                               rgba(37,37,37,1) 92%, rgba(27,27,27,1) 100%);
-            border: solid #252525 calc(var(--sz) * 0.14rem);
-            border-radius: calc(var(--sz) * 8rem) calc(var(--sz) * 8rem) calc(var(--sz) * 8rem) calc(var(--sz) * 8rem) / calc(var(--sz) * 2.5rem) calc(var(--sz) * 2.5rem) calc(var(--sz) * 2.5rem) calc(var(--sz) * 2.5rem);
-            padding: calc(var(--sz) * 1.428rem) calc(var(--sz) * 0.714rem) calc(var(--sz) * 2.143rem) calc(var(--sz) * 0.714rem);
-            display: grid;
-            justify-items: center;
-            grid-column-gap: calc(var(--sz) * 0.14rem);
-            grid-row-gap: calc(var(--sz) * 0.5rem);
-            grid-template-columns: 1fr 1fr 1fr;
-            width: calc(var(--sz) * 12.286rem);
-          }
-
-          .remote-body.AF6 {
-            border-radius: calc(var(--sz) * 2.8rem);
-          }
-
-          .XM2 {
-            min-height: calc(var(--sz) * 53rem);
-            grid-template-rows: repeat(7, auto) 1fr;
-            border-radius: calc(var(--sz) * 2rem);
-          }
-
-          .AL1, .AL2 {
-            display: block;
-            width: unset;
-            border-radius: calc(var(--sz) * 0.5rem);
-            padding: calc(var(--sz) * 1.4rem) calc(var(--sz) * 0.714rem);
-          }
-
-          .two-col-span {
-            grid-column-start: 1;
-            grid-column-end: 3;
-            width: 100%;
-            display: grid;
-            justify-content: center;
-            grid-row-gap: calc(var(--sz) * 0.143rem);
-            align-content: center;
-          }
-
-          .three-col-span {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            width: 100%;
-            display: grid;
-            grid-column-gap: calc(var(--sz) * 0.143rem);
-            grid-template-columns: 50% 50%;
-            align-content: center;
-          }
-
-          .apple-tv-top {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            width: calc(var(--sz) * 11.286rem);
-            justify-items: center;
-            align-items: center;
-            justify-content: center;
-            align-content: center;
-            padding-top: calc(var(--sz) * 0.85rem);
-          }
-
-          .remote-body #channel-up-button, .remote-body #channel-down-button {
-            --mdc-icon-size: 38px;
-          }
-
-          .nsappsgrid {
-            display: grid;
-            grid-row-gap: calc(var(--sz) * 0.6rem);
-          }
-
-          .afappsgrid {
-            display: grid;
-            margin-top: calc(var(--sz) * 0.57rem);
-            row-gap: calc(var(--sz) * 0.9rem);
-            justify-items: center;
-          }
-
-          .XM2 .afappsgrid {
-            margin-bottom: calc(var(--sz) * 0.57rem);
-          }
-
-          .appLauncherAppsContainer {
-            display: flex;
-            flex-wrap: wrap;
-            flex-direction: row;
-            align-content: center;
-            align-items: center;
-            justify-content: center;
-            gap: calc(var(--sz) * 0.9rem);
-          }
-
-          .ns1-wings {
-            grid-column-start: 1;
-            grid-column-end: 3;
-            width: 100%;
-            height: calc(var(--sz) * 25rem);
-            margin-top: calc(var(--sz) * -1rem);
-            display: grid;
-            grid-template-columns: 1fr 27% 1fr;
-          }
-
-          #ns1spine {
-            display: grid;
-            padding: calc(var(--sz) * 4rem) 0;
-          }
-
-          #ns1spine button {
-            all: unset;
-            background: transparent;
-          }
-
-          #ns1spine button:active {
-            background: #363636;
-          }
-
-          #wingL {
-            background: rgb(28 28 28);
-            -webkit-clip-path: polygon(100% 15%, 100% 85%, 0 100%, 0 0);
-            clip-path: polygon(100% 15%, 100% 85%, 0 100%, 0 0);
-            margin-left: calc(var(--sz) *-.714rem);
-            border-right: solid #121212 calc(var(--sz) * .15rem);
-          }
-
-          #wingR {
-            background: rgb(28 28 28);
-            -webkit-clip-path: polygon(100% 0, 100% 100%, 0 85%, 0 15%);
-            clip-path: polygon(100% 0, 100% 100%, 0 85%, 0 15%);
-            margin-right: calc(var(--sz) *-.714rem);
-            border-left: solid #121212 calc(var(--sz) * .15rem);
-          }
-
-          .ALControlsContainer {
-            display: flex;
-            gap: calc(var(--sz) * .25rem);
-            place-items: center;
-            padding-top: calc(var(--sz) * 2rem);
-            margin-top: calc(var(--sz) * 2rem);
-            border-top: groove rgb(0 0 0 / 42%) calc(var(--sz) * 0.2rem);
-            justify-content: space-evenly;
-            flex-wrap: wrap;
-            flex-direction: row;
-            width: 100%;
-          }
-
-          .ALControlsContainer.noApps {
-            padding-top: 0;
-            margin-top: 0;
-            border-top: 0;
-          }
-
-          .ALControlsContainer > div {
-            display: grid;
-            justify-items: center;
-            justify-content: center;
-          }
-
-          .left-pocket-controls {
-            display: flex;
-            column-gap: calc(var(--sz) * 2rem);
-            row-gap: calc(var(--sz) * 0.5rem);
-            flex-wrap: wrap;
-            justify-content: center;
-          }
-
-          .ALControlsContainer .row {
-            display: flex;
-            align-items: center;
-            gap: calc(var(--sz) * 0.5rem);
-            padding: calc(var(--sz) * 0.75rem);
-            background: rgb(255 255 255 / 6%);
-            border: inset #000 calc(var(--sz) * 0.2rem);
-          }
-
-          .ALControlsContainer .row.noframes {
-            background: none;
-            border: 0;
-          }
-
-          .right-pocket-controls > .row {
-            column-gap: calc(var(--sz) * 0.5rem);
-            line-height: calc(var(--sz) * .4rem);
-          }
-
-          .remote-button {
-            height: calc(var(--sz) * 3.572rem);
-            width: calc(var(--sz) * 3.572rem);
-            border: solid black calc(var(--sz) * 0.0714rem);
-            border-radius: 100%;
-            display: grid;
-            justify-content: center;
-            align-content: center;
-            color: rgb(198 198 198);
-            background: rgb(33 33 33);
-            box-shadow: rgb(0 0 0 / 13%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.143rem 0);
-            cursor: pointer;
-            line-height: normal;
-            user-select: none;
-            padding: calc(var(--sz) * 0.2857rem);
-          }
-
-          #power-button {
-            height: calc(var(--sz) * 2.8rem);
-            width: calc(var(--sz) * 2.8rem);
-            margin-bottom: calc(var(--sz) * -0.643rem);
-          }
-
-          .shield-remote-body .remote-button {
-            height: calc(var(--sz) * 3rem);
-            width: calc(var(--sz) * 3rem);
-          }
-
-          .apple-remote-body .remote-button {
-            height: calc(var(--sz) * 4.75rem);
-            width: calc(var(--sz) * 4.75rem);
-          }
-
-          .apple-remote-body.AR2 .remote-button {
-            height: calc(var(--sz) * 4.5rem);
-            width: calc(var(--sz) * 4.5rem);
-          }
-
-          .apple-remote-body.AR1 #back-button.remote-button, .apple-remote-body.AR2 #back-button.remote-button {
-            font-size: calc(var(--sz) * 1rem);
-            font-weight: 600;
-          }
-
-          .apple-remote-body.AR2 #search-button.remote-button, .apple-remote-body.AR3 #back-button.remote-button {
-            background: linear-gradient(rgb(0, 0, 0) 0%, rgb(48, 48, 48) 100%);
-            outline: solid #2b2b2b calc(var(--sz) * 0.01rem);
-          }
-
-
-          .chromecast-remote-body .remote-button, .chromecast-remote-body #keyboard-button {
-            background: #fff;
-            border: solid #bfbfbf calc(var(--sz) * 0.02em);
-            height: calc(var(--sz) * 4.2rem);
-            width: calc(var(--sz) * 4.2rem);
-            box-shadow: rgb(0 0 0 / 5%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.1428rem) 0;
-          }
-
-          .chromecast-remote-body.CC2 .remote-button {
-            background: #d5e0e4;
-            border-color: #a6a6a6;
-          }
-
-          .chromecast-remote-body.CC3 .remote-button {
-            background: #efddd6;
-            border-color: #bababa;
-          }
-
-          .chromecast-remote-body .srcButton {
-            border: solid #bfbfbf calc(var(--sz) * 0.02em);
-            height: calc(var(--sz) * 4.2rem);
-            width: calc(var(--sz) * 4.2rem);
-            border-radius: 100%;
-          }
-
-          .chromecast-remote-body #keyboard-button {
-            background: #484848;
-          }
-
-          .chromecast-remote-body #keyboard-button > ha-icon {
-            color: rgb(235, 235, 234);
-          }
-
-          .chromecast-remote-body.CC2 #keyboard-button {
-            background: linear-gradient(0deg, rgba(186,214,198,1) 0%, rgba(222,239,231,1) 90%);
-            border-color: #a6a6a6;
-          }
-
-          .chromecast-remote-body.CC3 #keyboard-button {
-            background: linear-gradient(0deg, rgba(221,158,152,1) 0%, rgba(228,186,180,1) 90%);
-            border-color: #a6a6a6;
-          }
-
-          .chromecast-remote-body.CC2 #keyboard-button > ha-icon,
-          .chromecast-remote-body.CC3 #keyboard-button > ha-icon {
-            color: #fff;
-          }
-
-          .apple-remote-body .srcButton {
-            border: solid #bfbfbf calc(var(--sz) * 0.02em);
-            height: calc(var(--sz) * 4.75rem);
-            width: calc(var(--sz) * 4.75rem);
-            border-radius: 100%;
-          }
-
-          .shield-remote-body #power-button, .XM2 #power-button{
-            height: calc(var(--sz) * 3rem);
-            width: calc(var(--sz) * 3rem);
-            margin-bottom: unset;
-          }
-
-          .XM2 #power-button, .XM2 #keyboard-button, .AL2 #power-button, .AL2 #keyboard-button {
-            height: calc(var(--sz) * 3.572rem);
-            width: calc(var(--sz) * 3.572rem);
-          }
-
-          .roku-remote-body #keyboard-button {
-            height: calc(var(--sz) * 2.25rem);
-            width: 100%;
-          }
-
-          .AL2 #power-button {
-            margin-bottom: unset;
-          }
-
-          .right {
-            display: flex;
-            width: 100%;
-            justify-content: flex-end;
-          }
-
-          .apple-remote-body #power-button {
-            background: none;
-            border: gray 0.01rem solid;
-            transform: scale(0.75);
-            margin: 0;
-          }
-
-          .shield-remote-body #power-button > ha-icon {
-            color: #851313;
-          }
-
-          .apple-remote-body #power-button > ha-icon {
-            color: rgb(33, 33, 33);
-          }
-
-          .roku-remote-body #power-button > ha-icon {
-            color: #970000;
-          }
-
-          .XM2 #power-button > ha-icon {
-            color: #835437;
-          }
-
-          #headset-button {
-            height: calc(var(--sz) * 2.8rem);
-            width: calc(var(--sz) * 2.8rem);
-            margin-bottom: calc(var(--sz) * -0.643rem);
-          }
-
-          .shield-remote-body #home-button {
-            --mdc-icon-size: 17px;
-          }
-
-          .shield-remote-body.ns1-body #home-button {
-            --mdc-icon-size: 23px;
-          }
-
-          .apple-remote-body #back-button {
-            --mdc-icon-size: 36px;
-          }
-
-          .shield-remote-body #back-button {
-            --mdc-icon-size: 41px;
-          }
-
-          .notch {
-            background: #181818;
-            height: calc(var(--sz) * 1rem);
-            width: calc(var(--sz) * 0.4rem);
-            margin-top: calc(var(--sz) * -0.5rem);
-            border-radius: calc(var(--sz) * 0.2rem);
-          }
-
-          .apple-remote-body .notch {
-            margin: 0;
-            width: calc(var(--sz) * 1rem);
-            height: calc(var(--sz) * 0.4rem);
-          }
-
-          .chromecast-remote-body .notch {
-            height: calc(var(--sz) * 0.8rem);
-            width: calc(var(--sz) * 0.3rem);
-            rotate: 90deg;
-            margin: 0;
-          }
-
-          .shieldNotch {
-            grid-column: 1 / 3;
-            background: rgb(24, 24, 24);
-            height: calc(var(--sz) * 0.3rem);
-            width: calc(var(--sz) * 0.75rem);
-            margin-top: calc(var(--sz) * -0.5rem);
-            border-radius: calc(var(--sz) * 0.2rem);
-          }
-
-          .notchtall {
-            margin-bottom: calc(var(--sz) * 1.65rem);
-          }
-
-          .ns1-body .shieldNotch {
-            height: calc(var(--sz) * 0.75rem);
-            width: calc(var(--sz) * 2.2rem);
-            border: solid #282828 calc(var(--sz) * 0.12rem);
-            border-radius: calc(var(--sz) * 0.5rem);
-          }
-
-          #keyboard-button {
-            height: calc(var(--sz) * 3rem);
-            width: calc(var(--sz) * 3rem);
-          }
-
-          .teal {
-            background: #09727e;
-          }
-
-          .dpadContainer{
-            grid-column: 1 / 4;
-            display: grid;
-            margin-bottom: calc(var(--sz) * 0.65rem);
-            width: calc(var(--sz) * 11.286rem);
-            height: calc(var(--sz) * 11.286rem);
-            position: relative;
-          }
-
-          .chromecast-remote-body .dpadContainer,
-          .apple-remote-body .dpadContainer {
-            grid-column: 1 / 3;
-            margin-bottom: 0;
-          }
-
-          .apple-remote-body.AR2 .dpadContainer {
-            overflow: hidden;
-          }
-
-          .XM2 .dpadContainer,
-          .XM.dpadContainer {
-            align-items: center;
-            justify-items: center;
-            position: relative;
-          }
-
-          .shieldDpad {
-            grid-column: 1 / 3;
-            width: calc(var(--sz) * 8.2rem);
-            height: calc(var(--sz) * 8.2rem);
-            position: relative;
-          }
-
-          .ALControlsContainer .dpadContainer {
-            grid-column: unset;
-          }
-
-          .centerbutton{
-            all: unset;
-            cursor: pointer;
-            border: solid black calc(var(--sz) * 0.0714rem);
-            margin-left: calc(var(--sz) * 2.357rem);
-            margin-top: calc(var(--sz) * 2.357rem);
-            width: calc(var(--sz) * 6.428rem);
-            height: calc(var(--sz) * 6.428rem);
-            border-radius: 100%;
-            position: absolute;
-            background: rgba(55,55,55,1);
-            box-shadow: inset 0 0.calc(var(--sz) * 2857rem) calc(var(--sz) * 0.1428rem) calc(var(--sz) * -0.1428rem) #000000d9;
-            z-index: 5;
-          }
-
-          .directionButtonContainer{
-            transform: rotate(45deg);
-            border: calc(var(--sz) * 0.0714rem) solid black;
-            display: grid;
-            grid-template-columns: auto auto;
-            border-radius: 100%;
-            overflow: hidden;
-            box-shadow: rgb(20 20 20) calc(var(--sz) * 0.1428rem) calc(var(--sz) * 0.1428rem) calc(var(--sz) * 0.4285rem);
-            position: relative;
-          }
-
-          .AR2 .directionButtonContainer {
-            margin-top: calc(var(--sz) * -1.4rem);
-            margin-left: calc(var(--sz) * -1.35rem);
-            border-radius: 0;
-            border: 0;
-            overflow: unset;
-            box-shadow: none;
-          }
-
-          .chromecast-remote-body .directionButtonContainer,
-          .CC .directionButtonContainer {
-            border: calc(var(--sz) * 0.0714rem) solid #9d9d9d;
-            box-shadow: rgb(0 0 0 / 29%) 0 0 calc(var(--sz) * 0.4rem) calc(var(--sz) * 0.02rem);
-          }
-
-          .dpadbutton{
-            all: unset;
-            cursor: pointer;
-            width: calc(var(--sz) * 5.5714rem);
-            height: calc(var(--sz) * 5.5714rem);
-            background: #141414;
-            color: white;
-            font-size: calc(var(--sz) * 1rem);
-            outline: solid #2e2e2e calc(var(--sz) * 0.0714rem);
-          }
-
-          .AR2 .dpadbutton {
-            width: calc(var(--sz) * 7rem);
-            height: calc(var(--sz) * 7rem);
-            outline: none;
-          }
-
-          .XM2 .dpadbutton,
-          .XM .dpadbutton {
-            background: rgb(28 28 28);
-            border: solid rgb(15 15 15) calc(var(--sz) * 0.03rem);
-            outline: none;
-            box-sizing: border-box;
-          }
-
-          .XM2 .dpadbutton:active,
-          .XM .dpadbutton:active {
-            background: rgb(24 24 24);
-            border: solid #000 calc(var(--sz) * 0.15rem);
-          }
-
-          .chromecast-remote-body.CC1 .dpadbutton,
-          .CC .dpadbutton {
-            background: #fff;
-            outline: solid #c5c5c5 calc(var(--sz) * 0.0714rem);
-          }
-
-          .chromecast-remote-body.CC2 .dpadbutton,
-          .CC2 .dpadbutton {
-            background: #cad4d8;
-            outline: solid #c5c5c5 calc(var(--sz) * 0.0714rem);
-          }
-
-          .chromecast-remote-body.CC3 .dpadbutton,
-          .CC3 .dpadbutton {
-            background: #e1d2cc;
-            outline: solid #c5c5c5 calc(var(--sz) * 0.0714rem);
-          }
-
-          .AR3 .dpadbutton:nth-child(1)::after,
-          .AR1 .dpadbutton:nth-child(1)::after {
-            content: "•";
-            text-align: center;
-            display: block;
-            font-weight: 600;
-            color: rgb(198, 198, 198);
-            padding-right: calc(var(--sz) * 1.2rem);
-            padding-bottom: calc(var(--sz) * 1.2rem);
-          }
-
-          .AR3 .dpadbutton:nth-child(2)::after,
-          .AR1 .dpadbutton:nth-child(2)::after {
-            content: "•";
-            text-align: center;
-            display: block;
-            font-weight: 600;
-            color: rgb(198, 198, 198);
-            padding-left: calc(var(--sz) * 1.2rem);
-            padding-bottom: calc(var(--sz) * 1.2rem);
-          }
-
-          .AR3 .dpadbutton:nth-child(3)::after,
-          .AR1 .dpadbutton:nth-child(3)::after {
-            content: "•";
-            text-align: center;
-            display: block;
-            font-weight: 600;
-            color: rgb(198, 198, 198);
-            padding-right: calc(var(--sz) * 1.2rem);
-            padding-top: calc(var(--sz) * 1.2rem);
-          }
-
-          .AR3 .dpadbutton:nth-child(4)::after,
-          .AR1 .dpadbutton:nth-child(4)::after {
-            content: "•";
-            text-align: center;
-            display: block;
-            font-weight: 600;
-            color: rgb(198, 198, 198);
-            padding-left: calc(var(--sz) * 1.2rem);
-            padding-top: calc(var(--sz) * 1.2rem);
-          }
-
-          .dpadbutton:active {
-            background: #282828;
-          }
-
-          .chromecast-remote-body .dpadbutton:active,
-          .CC .dpadbutton:active {
-            background: #efefef;
-          }
-
-          .chromecast-remote-body.CC2 .dpadbutton:active {
-            background: #bfcbd0;
-          }
-
-          .chromecast-remote-body.CC3 .dpadbutton:active {
-            background: #dbcac3;
-          }
-
-          .dpadbuttonShield {
-            width: calc(var(--sz) * 4.101rem);
-            height: calc(var(--sz) * 4.101rem);
-          }
-
-          .centerbuttonShield {
-            width: calc(var(--sz) * 5rem);
-            height: calc(var(--sz) * 5rem);
-            margin: 0px;
-            padding: 0px;
-            place-self: center;
-            position: absolute;
-            background: rgba(37,37,37,1);
-            background: radial-gradient(circle, rgba(28,28,28,1) 0%, rgba(37,37,37,1) 100%);
-          }
-
-          .XM2 .centerbutton,
-          .XM .centerbutton {
-            background: rgb(28, 28, 28);
-            border: solid black calc(var(--sz) * 0.2rem);
-            width: calc(var(--sz) * 5rem);
-            height: calc(var(--sz) * 5rem);
-            margin: 0px;
-            position: absolute;
-            box-sizing: border-box;
-          }
-
-          .chromecast-remote-body .centerbutton,
-          .CC .centerbutton {
-            background: linear-gradient(rgb(226 226 226) 0%, rgb(255, 255, 255) 70%);
-            box-shadow: inset rgb(0 0 0 / 10%) 0 calc(var(--sz) * 0.15rem) calc(var(--sz) * 0.4rem);
-            border: solid #dddddd calc(var(--sz) * 0.0714rem);
-            width: calc(var(--sz) * 4rem);
-            height: calc(var(--sz) * 4rem);
-            place-self: center;
-            position: absolute;
-            margin: 0;
-            padding: 0;
-          }
-
-          .chromecast-remote-body.CC2 .centerbutton {
-            background: linear-gradient(0deg, rgb(208 218 225) 5%, rgb(181 194 199) 100%);
-            border: solid #bbc5c9 calc(var(--sz)* 0.0714rem);
-          }
-
-          .chromecast-remote-body.CC3 .centerbutton {
-            background: linear-gradient(0deg, rgba(245,226,219,1) 0%, rgba(196,180,174,1) 100%);
-            border: solid #d9d1d1 calc(var(--sz)* 0.0714rem);
-          }
-
-          .apple-remote-body .centerbutton,
-          .AR3 .centerbutton {
-            background: linear-gradient(180deg, rgba(0,0,0,1) 0%, rgba(48,48,48,1) 100%);
-            width: calc(var(--sz) * 6rem);
-            height: calc(var(--sz) * 6rem);
-            margin-left: calc(var(--sz) * 2.65rem);
-            margin-top: calc(var(--sz) * 2.65rem);
-            box-sizing: border-box;
-            transform-origin: center bottom;
-            outline: solid #2e2e2e calc(var(--sz) * 0.0714rem);
-          }
-
-          .AR1 .centerbutton {
-            background: linear-gradient(180deg, rgb(147, 148, 150) 0%, rgb(207, 211, 213) 100%);
-          }
-
-          .apple-remote-body.AR2 .centerbutton {
-            border-radius: 0;
-            border: 0;
-            outline: 0;
-            transform: scale(.75);
-            transform-origin: center;
-            text-align: center;
-          }
-
-          .apple-remote-body.AR2 .dpadContainer button {
-            background: none;
-            color: transparent;
-          }
-          .apple-remote-body.AR2 .dpadContainer button:hover,
-          .apple-remote-body.AR2 .dpadContainer button:active {
-            color: #636363;
-            text-align: center;
-          }
-
-
-          .centerbutton:active {
-            transform: scale(95%);
-          }
-
-          .chromecast-remote-body .centerbutton:active,
-          .CC .centerbutton:active {
-            transform: none;
-            box-shadow: inset rgb(0 0 0 / 19%) 0 calc(var(--sz) * 0.25rem) calc(var(--sz) * 0.4375rem) calc(var(--sz) * 0.125rem);
-          }
-
-
-          .apple-remote-body .centerbutton:active,
-          .AR3 .centerbutton:active {
-            transform: none;
-            border: calc(var(--sz) * 0.2rem) solid black;
-          }
-
-          .AR3 .centerbutton:active {
-            background: linear-gradient(180deg, rgba(0,0,0,1) 15%, rgba(48,48,48,1) 100%);
-          }
-
-          .XM1 .centerbutton:active,
-          .XM2 .centerbutton:active,
-          .XM .centerbutton:active {
-            transform: none;
-            border: solid #090909 calc(var(--sz) * 0.24rem);
-            background: rgb(26 26 26);
-          }
-
-          .minimal.dpadContainer {
-            align-items: center;
-            justify-items: center;
-            display: grid;
-            grid-template-columns: auto calc(var(--sz) * 5rem) auto;
-            grid-template-rows: auto calc(var(--sz) * 5rem) auto;
-            margin: calc(var(--sz) * 1rem);
-            height: calc(var(--sz) * 10.3rem);
-            aspect-ratio: 1/1;
-          }
-
-          .minimal .directionButtonContainer {
-            border-radius: 30%;
-            border: none;
-            box-shadow: none;
-          }
-
-          .minimal .dpadbutton {
-            background: transparent;
-            outline: none;
-            display: grid;
-            height: 100%;
-            width: 100%;
-            transform-origin: center center;
-            align-self: start;
-            justify-items: center;
-            justify-content: center;
-            align-content: center;
-          }
-
-          .minimal .dpadbutton > svg {
-            pointer-events: none;
-          }
-
-          .minimal .dpadbutton:active {
-            transform: scale(0.8);
-          }
-
-          .minimal .dpadbutton > svg {
-            display: inline-block;
-            transform: scale(calc(var(--sz) * .55));
-          }
-
-          .minimal .centerbutton {
-            border: calc(var(--sz) * 0.175rem) solid rgb(179 179 179);
-            background: transparent;
-            border-radius: 25%;
-            width: calc(var(--sz) * 3rem);
-            height: calc(var(--sz) * 3rem);
-            margin: 0;
-            position: unset;
-          }
-
-          .minimal.dpadContainer #up-button {
-             align-content: flex-start;
-          }
-
-          .minimal.dpadContainer #right-button {
-             justify-content: flex-end;
-          }
-
-          .minimal.dpadContainer #down-button {
-             align-content: flex-end;
-          }
-
-          .minimal.dpadContainer #left-button {
-             justify-content: flex-start;
-          }
-
-          .remote-button:active {
-            box-shadow: inset rgb(0 0 0 / 13%) 0 calc(var(--sz) * 0.2857rem) calc(var(--sz) * 0.1428rem) 0;
-          }
-
-          .remote-button > ha-icon {
-            color: #c6c6c6;
-          }
-
-          .remote-button:active > ha-icon, .remote-button:active > .mdiSubstituteIconWrapper {
-            color: #bcbcbc;
-            transform: scale(calc(var(--sz) * 0.85));
-          }
-
-          .chromecast-remote-body ha-icon {
-            color: #686868;
-          }
-
-          .chromecast-remote-body .remote-button:active {
-            box-shadow: rgb(0 0 0 / 5%) 0px calc(var(--sz) * 0.125rem) calc(var(--sz) * 0.125rem) calc(var(--sz) * 0.1875rem) inset;
-          }
-
-          .chromecast-remote-body .remote-button:active > ha-icon {
-            color: #000;
-          }
-
-          .square {
-            border-radius: 0;
-            border: 0;
-            padding: 0;
-          }
-
-          .round-top {
-            border-radius: 100% 100% 0 0;
-            border-bottom: 0;
-            box-shadow: none;
-            height: calc(var(--sz) * 3.92857rem);
-            margin-bottom: calc(var(--sz) * -0.5rem);
-          }
-
-          .round-bottom {
-            border-radius: 0 0 100% 100%;
-            border-top: 0;
-            height: calc(var(--sz) * 3.92857rem);
-            margin-top: calc(var(--sz) * -0.5rem);
-          }
-
-          .apple-remote-body .round-bottom, .apple-remote-body.AR2 .round-bottom {
-            height: calc(var(--sz) * 5.25rem);
-          }
-
-          .square:active, .round-bottom:active {
-              box-shadow: none;
-          }
-
-          .remote-body #volume-up-button, .remote-body #volume-down-button {
-              font-size: calc(var(--sz) * 2.5rem);
-          }
-          .apple-remote-body #volume-up-button, .apple-remote-body #volume-down-button {
-              font-size: calc(var(--sz) * 2.25rem);
-          }
-          .remote-body #programmable-one-button, .remote-body #programmable-two-button {
-              font-size: calc(var(--sz) * 1.75rem);
-          }
-
-          .remote-body #volume-up-button:active, .remote-body #volume-down-button:active {
-              font-size: calc(var(--sz) * 2rem);
-          }
-          .apple-remote-body #volume-up-button:active, .apple-remote-body #volume-down-button:active {
-              font-size: calc(var(--sz) * 1.75rem);
-          }
-          .remote-body #programmable-one-button:active, .remote-body #programmable-two-button:active {
-              font-size: calc(var(--sz) * 1.45rem);
-          }
-
-          .srcButton .deviceAppIcon {
-            width: calc(var(--sz) * 1.5rem);
-            height: calc(var(--sz) * 1.5rem);
-            object-fit: contain;
-          }
-          .deviceAppIcon:not([hidden]) + .deviceAppName {
-            display: none;
-          }
-          .srcButton span {
-            max-width: 100%;
-            overflow: hidden;
-            text-overflow: ellipsis;
-          }
-          .srcButton {
-            height: calc(var(--sz) * 2rem);
-            width: calc(var(--sz) * 5.714rem);
-            border: solid #090909 calc(var(--sz) * 0.0714rem);
-            border-radius: calc(var(--sz) * 2rem);
-            display: grid;
-            justify-items: center;
-            align-content: center;
-            color: rgb(198 198 198);
-            background: rgb(33 33 33);
-            box-shadow: rgb(0 0 0 / 25%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.1428rem) 0;
-            cursor: pointer;
-            line-height: normal;
-            user-select: none;
-            font-size: calc(var(--sz) * 1.14rem);
-            padding: calc(var(--sz) * 0.285rem);
-            white-space: nowrap;
-            transform: translate3d(0,0,0); /* because ios safari mobile */
-            overflow: hidden;
-            transition: filter 250ms;
-            filter: var(--appButtonFilter);
-          }
-
-          .apple-remote-body .srcButton {
-            border: none;
-            box-shadow: rgb(0 0 0 / 13%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.143rem 0);
-            transition: none;
-          }
-
-          .chromecast-remote-body .srcButton {
-            filter: grayscale(40%);
-            box-shadow: rgb(0 0 0 / 5%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.1428rem) 0;
-          }
-
-          .srcButton:active, .srcButton.appActive {
-            filter: none;
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.142rem) rgb(255 255 255 / 20%);
-            transition: filter 0s;
-          }
-
-          .srcButton.appActiveUnknown {
-            filter: grayscale(0%) brightness(100%);
-            transition: filter 0s;
-          }
-
-          .shield-remote-body .srcButton {
-            height: calc(var(--sz) * 3rem);
-            width: calc(var(--sz) * 8rem);
-          }
-
-          .srcButton:active {
-            filter: brightness(90%);
-            transform: scale(.95);
-            box-shadow: none;
-            transform-origin: center bottom;
-          }
-
-          .chromecast-remote-body .srcButton:active {
-            filter: none;
-          }
-
-          .srcButton svg {
-            pointer-events: none;
-            max-width: calc(var(--sz) * 4.5rem);
-            max-height: calc(var(--sz) * 1.6rem);
-          }
-
-          .shield-remote-body .srcButton svg {
-            max-height: calc(var(--sz) * 2.1rem);
-            max-width: calc(var(--sz) * 6.8rem);
-          }
-
-          .chromecast-remote-body .srcButton svg, .apple-remote-body .srcButton svg {
-            max-width: calc(var(--sz) * 3.25rem);
-            max-height: calc(var(--sz) * 3.25rem);
-          }
-
-          .apple-remote-body .srcButton svg {
-            max-width: calc(var(--sz) * 3.55rem);
-            max-height: calc(var(--sz) * 3.55rem);
-          }
-
-          .chromecastBottomIndentedRow {
-            display: grid;
-            width: calc(100% - (var(--sz) * 1.2rem) - (var(--sz) * 0.4rem * 2));
-            padding: calc(var(--sz) * 0.4rem);
-            box-sizing: border-box;
-            grid-template-columns: auto 1fr auto;
-            box-shadow: rgb(0 0 0 / 28%) 0 calc(var(--sz) * 0.12rem) calc(var(--sz) * 0.4rem) inset;
-            border-radius: calc(var(--sz) * 5rem);
-            grid-column: 1 / 3;
-            place-items: center;
-            margin-top: calc(var(--sz) * 1rem);
-          }
-
-          .chromecastBottomIndentedRow .remote-button, .chromecastBottomIndentedRow .input-button {
-            height: calc(var(--sz) * 2.3rem) !important;
-            width: calc(var(--sz) * 2.3rem) !important;
-            margin: 0 !important;
-          }
-
-          .chromecastVolumeRocker {
-            grid-column: 1 / 3;
-            place-items: center;
-            width: calc(100% - (var(--sz) * 1.2rem) - (var(--sz) * 0.4rem * 2));
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-          }
-
-          .chromecastVolumeRocker > button {
-            height: calc(var(--sz) * 2rem) !important;
-            width: 100% !important;
-            box-shadow: rgb(0 0 0 / 5%) 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.1428rem) 0;
-          }
-
-          .chromecastVolumeRocker #volume-down-button {
-            border-radius: calc(var(--sz) * 2rem) 0 0 calc(var(--sz) * 2rem);
-            border-right: calc(var(--sz) * 0.05rem) solid #ebebeb;
-          }
-
-          .chromecastVolumeRocker #volume-up-button {
-            border-radius: 0% calc(var(--sz) * 2rem) calc(var(--sz) * 2rem) 0;
-            border-left: 0;
-          }
-
-          .digit-pad-button {
-            font-size: calc(var(--sz) * 1rem);
-            font-weight: 600;
-            height: calc(var(--sz) * 2rem);
-            border-radius: calc(var(--sz) * 1em);
-          }
-
-          .digit-pad-button:active {
-            font-size: calc(var(--sz) * 0.9rem);
-          }
-
-          .deviceNameTop {
-            white-space: nowrap;
-            font-size: calc(var(--sz) * 1rem);
-            overflow: hidden;
-            color: var(--devicenamecolor);
-            margin-left: -1rem;
-            text-align: center;
-            display: grid;
-            height: calc(var(--sz) * 2rem);
-            align-items: center;
-            align-content: center;
-            justify-items: center;
-          }
-
-          .AF6 .deviceNameTop,
-          .AFJTV .deviceNameTop,
-          .AFXF2 .deviceNameTop{
-            grid-column: 1 / 4;
-            display: block;
-            text-align: center;
-            margin: 0;
-            padding: 0;
-          }
-
-          .AL1 .deviceNameTop, .AL2 .deviceNameTop {
-            margin: 0rem 0px calc(var(--sz) * 1.25rem);
-            display: block;
-            height: unset;
-            overflow: unset;
-            font-size: calc(var(--sz) * 1.25rem);
-          }
-
-          .roku-remote-body .deviceNameTop {
-            margin-left: 0;
-            height: auto;
-          }
-
-          .roku-remote-body.RSR .deviceNameTop {
-              position: absolute;
-          }
-
-          .shield-remote-body .deviceNameTop {
-            display: unset;
-            align-items: unset;
-            align-content: unset;
-            justify-items: unset;
-            margin-left: 0;
-            margin-top: -1rem;
-          }
-
-          .shield-remote-body.ns1-body .deviceNameTop {
-            margin-top: 0rem;
-            margin-bottom: -0.75rem;
-          }
-
-          .XM2 .deviceNameTop {
-            grid-column: 1 / 4;
-            margin: calc(var(--sz) * -1rem) 0 0;
-          }
-
-          .chromecast-remote-body .deviceNameTop {
-            grid-column: 1 / 3;
-            margin: unset;
-            margin-top: calc(var(--sz) * 1rem);
-            height: unset;
-            display: block;
-          }
-
-          .apple-remote-body .deviceNameTop {
-            grid-column: 1 / 3;
-            margin: 0 0 calc(var(--sz) * -1.8rem) 0;
-          }
-
-          .apple-remote-body.AR1 .deviceNameTop {
-            margin: calc(var(--sz) * -4rem) 0 calc(var(--sz) * -2.5rem) 0;
-          }
-
-          .deviceNameBottom {
-            grid-column: 1/4;
-            color: var(--devicenamecolor);
-            font-size: calc(var(--sz) * 1.25rem);
-            margin-bottom: calc(var(--sz) * -2.5rem);
-            margin-top: calc(var(--sz) * .5rem);
-            white-space: nowrap;
-            overflow: hidden;
-            width: 100%;
-            text-align: center;
-            align-self: flex-end;
-          }
-
-          .AF6 .deviceNameBottom {
-            margin-bottom: calc(var(--sz) * -1rem);
-          }
-
-          .AL1 .deviceNameBottom, .AL2 .deviceNameBottom {
-            margin-bottom: unset;
-            margin-top: calc(var(--sz) * 1.8rem);
-            overflow: unset;
-          }
-
-          .apple-remote-body .deviceNameBottom {
-            grid-column: 1 / 3;
-            margin-bottom: calc(var(--sz) * -1.25rem);
-          }
-
-          .shield-remote-body .deviceNameBottom {
-            grid-column: 1 / 3;
-            font-size: calc(var(--sz) * 1rem);
-            margin-top: 0px;
-            margin-bottom: 0px;
-            position: absolute;
-            bottom: calc(var(--sz) * 0.3rem);
-          }
-
-          .chromecast-remote-body .deviceNameBottom {
-            grid-column: 1 / 3;
-            margin-right: unset;
-            margin-bottom: calc(var(--sz) * 1rem);
-            margin-left: unset;
-            margin-top: calc(var(--sz) * 0.5rem);
-            height: unset;
-            display: block;
-          }
-
-          .roku-remote-body.RTR .deviceNameBottom {
-             margin-bottom: calc(var(--sz) * 0.1rem);
-             margin-top: calc(var(--sz) * -1.25rem);
-          }
-
-          .roku-remote-body.RWR .deviceNameBottom,
-          .roku-remote-body.RHR .deviceNameBottom {
-            position: absolute;
-            width: calc(var(--sz) * 11.45rem);
-            bottom: calc(var(--sz) * 3.5rem);
-          }
-
-          .firemoteVersionNumber {
-            text-shadow: 0px 1px 0px #1e1e1e, 0px -1px 0px #000;
-            color: #4e4e4e;
-            align-self: right;
-            text-align: right;
-            width: 100%;
-            justify-self: right;
-            display: block !important;
-            font-size: calc(var(--sz) * .9rem);
-            position: absolute;
-            bottom: calc(var(--sz) * .35rem);
-            right: calc(var(--sz) * .4rem);
-          }
-
-          .customLauncherBackground {
-            pointer-events: none;
-            position: absolute;
-            height: 100%;
-            width: 100%;
-            transform: scale(1.25);
-            z-index: 1;
-            overflow: hidden;
-          }
-
-          .customLauncherTxt {
-            z-index: 2;
-            pointer-events: none;
-          }
-
-          .customLauncherIcon {
-            display: flex;
-            max-width: 100%;
-            max-height: 100%;
-            transform: scale(var(--sz));
-            display: flex;
-            align-items: center;
-            z-index: 2;
-          }
-
-          .customLauncherImg {
-            pointer-events: none;
-            max-width: 100%;
-            max-height: 100%;
-            overflow: hidden;
-            z-index: 2;
-          }
-
-          .AFJTV #tv-button,
-          .AFXF2 #tv-button{
-            font-size: calc(var(--sz) * 0.8rem);
-            font-weight: 600;
-          }
-
-          .colorButtons {
-            display: flex;
-            justify-content: space-around;
-            margin: calc(var(--sz) * 0.5rem) 0 calc(var(--sz) * 4.5rem) 0;;
-          }
-
-          .AFJTV div.colorButtons button,
-          .AFXF2 div.colorButtons button{
-            border-radius: 100%;
-            overflow: hidden;
-            height: calc(var(--sz) * 2.3rem);
-            width: calc(var(--sz) * 2.3rem);
-          }
-
-          .AFJTV div.colorButtons button svg,
-          .AFXF2 div.colorButtons button svg {
-            height: calc(var(--sz) * 1.1rem);
-            width: calc(var(--sz) * 1.1rem);
-            filter: brightness(0.8) saturate(0.8);
-            pointer-events: none;
-          }
-
-          .AFJTV div.colorButtons button:active svg,
-          .AFXF2 div.colorButtons button:active svg{
-            filter: none;
-            transform: scale(0.85)
-          }
-
-          .AFJTV .jvcbrandlogo {
-             height: 0;
-             display: flex;
-             justify-content: center;
-             align-items: center;
-             margin-top: calc(var(--sz) * -2rem);
-          }
-
-          .AFJTV .jvcbrandlogo svg {
-            width: calc(var(--sz) * 5rem);
-            height: auto;
-          }
-
-          .AFXF2 .xf2brandlogo {
-             height: 0;
-             display: flex;
-             justify-content: center;
-             align-items: center;
-             margin-top: calc(var(--sz) * -1.5rem);
-          }
-
-          .AFXF2 .xf2brandlogo svg {
-            width: calc(var(--sz) * 7rem);
-            height: auto;
-          }
-
-          /* Homatics styles */
-          .homatics-remote-body {
-            align-content: start;
-            grid-row-gap: calc(var(--sz)* 1rem);
-            background: #ebebea;
-            border-color: #dcdcdc;
-            border-radius: calc(var(--sz)* 2.8rem);
-            min-height: calc(var(--sz)* 48.5rem);
-            padding: calc(var(--sz) * 1.1rem) calc(var(--sz) * 0.714rem) calc(var(--sz) * 2.143rem) calc(var(--sz) * 0.714rem);
-            box-shadow: 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.214rem) rgb(0 0 0 / 10%);
-          }
-
-          .homatics-remote-body.HO2, 
-          .homatics-remote-body.HO4 {
-            background: #252525;
-            border-color: #2f2f2f;
-          }
-
-          .HO1 .remote-button,
-          .HO3 .remote-button {
-            background: #fff;
-            color: rgb(106, 106, 106);
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            box-shadow: rgb(0 0 0 / 15%) 0px calc(var(--sz)* 0.063rem) calc(var(--sz)* 0.188rem);
-          }
-
-          .HO2 .remote-button, 
-          .HO4 .remote-button {
-            background: #2f2f2f;
-            border: solid rgb(15 15 15) calc(var(--sz)* 0.0714rem);
-          }
-
-          .homatics-remote-body .remote-button:active {
-            box-shadow: inset rgb(0 0 0 / 42%) 0px calc(var(--sz)* 0.1rem) calc(var(--sz)* 0.188rem);
-            filter: brightness(0.94);
-            border: solid rgb(232 232 232) calc(var(--sz)* 0.0714rem);
-          }
-
-          .HO2 .remote-button:active, 
-          .HO4 .remote-button:active {
-            border: solid rgb(10 10 10) calc(var(--sz)* 0.0714rem);
-          }
-
-          .HO2 .litbutton,
-          .HO4 .litbutton {
-            box-shadow: 0 0 calc(var(--sz)* 0.857rem) calc(var(--sz)* 0.0714rem) rgb(171 253 255 / 15%);
-          }
-
-          .HO1 .litbutton > ha-icon, 
-          .HO3 .litbutton > ha-icon {
-            color: #00979b !important;
-          }
-
-          .HO2 .litbutton > ha-icon, 
-          .HO4 .litbutton > ha-icon {
-            color: #abfdff !important
-          }
-
-          .homatics-remote-body .deviceNameTop {
-            grid-column: 1 / 4;
-            margin: unset;
-            height: unset;
-            display: block;
-            margin-bottom: calc(var(--sz) * -1rem);
-          }
-
-          .HO1 #home-button.litbutton > ha-icon, .HO3 #home-button.litbutton > ha-icon {
-            color: #03585b !important
-          }
-
-          .HO2 #home-button.litbutton > ha-icon, .HO4 #home-button.litbutton > ha-icon {
-            color: #45989a !important
-          }
-
-          .homatics-remote-body .micHole {
-            background: black;
-            border-radius: 100%;
-            height: calc(var(--sz)* 0.3rem);
-            aspect-ratio: 1 / 1;
-            align-self: end;
-            justify-self: center;
-          }
-
-          .homatics-remote-body #power-button, .homatics-remote-body #input-button {
-            height: calc(var(--sz)* 2.75rem);
-            width: calc(var(--sz)* 2.75rem);
-          }
-
-          .remote-body.HO1 .remote-button > ha-icon, 
-          .remote-body.HO3 .remote-button > ha-icon {
-            color: rgb(106 106 106);
-          }
-
-          .remote-body.HO2 .remote-button > ha-icon {
-            color: rgb(245 245 245);
-          }
-
-          .homatics-remote-body .remote-button.dark {
-            background: linear-gradient(180deg, rgb(168 168 168) 26%, rgb(144 144 144) 50%, rgb(128 128 128) 75%);
-          }
-
-          .homatics-remote-body.HO2 .remote-button.dark,
-          .homatics-remote-body.HO4 .remote-button.dark {
-            background: linear-gradient(180deg, rgb(255 255 255) 26%, rgb(221 221 221) 50%, rgb(211 211 211) 75%);
-          }
-
-          .homatics-remote-body .remote-button.dark > ha-icon {
-            color: #000;
-          }
-
-          .homatics-remote-body.HO2 .remote-button.dark > ha-icon,
-          .homatics-remote-body.HO4 .remote-button.dark > ha-icon {
-            color: #4b4b4b;
-          }
-
-          .remote-body.HO2 .remote-button.light > ha-icon {
-            color: #464646;
-          }
-
-          .homatics-remote-body .micNLight {
-            display: grid;
-            align-content: space-between;
-            padding: calc(var(--sz) * 0.25rem) 0;
-          }
-
-          .homatics-remote-body .activityLight {
-            background: #ff0000;
-            box-shadow: #ff0000 0 0 calc(var(--sz)* 0.6rem) calc(var(--sz)* 0.05rem);
-            border-radius: 100%;
-            height: calc(var(--sz)* 0.4rem);
-            aspect-ratio: 1 / 1;
-            opacity: 0;
-          }
-
-          .homatics-remote-body.HO2 .activityLight,
-          .homatics-remote-body.HO4 .activityLight {
-            background: #adff87;
-            box-shadow: lime 0 0 calc(var(--sz)* 0.6rem) calc(var(--sz)* 0.05rem);
-          }
-
-          .homatics-remote-body .digit-pad-button {
-            font-size: calc(var(--sz)* 1rem);
-            font-weight: 600;
-            height: calc(var(--sz)* 2.75rem);
-            width: calc(var(--sz)* 2.75rem);
-            border-radius: 100%;
-            margin-bottom: calc(var(--sz)* -0.6rem);
-          }
-
-          .homatics-remote-body .colorButtons {
-            display: flex;
-            justify-content: space-around;
-            margin: calc(var(--sz) * 0.5rem) 0 0 0;
-          }
-
-          .homatics-remote-body div.colorButtons button {
-            border-radius: 100%;
-            overflow: hidden;
-            height: calc(var(--sz) * 2.3rem);
-            width: calc(var(--sz) * 2.3rem);
-          }
-
-          .homatics-remote-body div.colorButtons button svg{
-            height: calc(var(--sz) * 1.1rem);
-            width: calc(var(--sz) * 1.1rem);
-            filter: brightness(0.8) saturate(0.8);
-            pointer-events: none;
-          }
-
-          .homatics-remote-body div.colorButtons button:active svg{
-            filter: none;
-            transform: scale(0.85)
-          }
-
-
-          .homatics-remote-body #bookmark-button, .homatics-remote-body #settings-button {
-            align-self: end;
-          }
-
-          .homatics-remote-body #keyboard-button {
-            height: calc(var(--sz)* 3.572rem);
-            width: calc(var(--sz)* 3.572rem);
-            margin-bottom: calc(var(--sz)* 1.1rem);
-          }
-
-          .homatics-remote-body .directionButtonContainer {
-            box-shadow: rgb(0 0 0 / 15%) calc(var(--sz)* 0.025rem) calc(var(--sz)* 0.025rem) calc(var(--sz)* 0.025rem)
-            background: #cacaca;
-            border: calc(var(--sz)* 0.0714rem) solid #cacaca;
-          }
-
-          .homatics-remote-body .directionButtonContainer:has(#down-button:active) {
-            box-shadow: none;
-          }
-
-          .homatics-remote-body .dpadContainer {
-            align-items: center;
-            justify-items: center;
-            position: relative;
-            margin-top: calc(var(--sz)* -1.5rem);
-            margin-bottom: calc(var(--sz)* -1.5rem);
-            isolation: isolate;
-          }
-
-          .homatics-remote-body .dpadbutton, .homatics-remote-body .dpadbutton:active {
-            all: unset;
-            cursor: pointer;
-            width: calc(var(--sz)* 5.5714rem);
-            height: calc(var(--sz)* 5.5714rem);
-            outline: solid #a6a6a6 calc(var(--sz)* 0.0714rem);
-          }
-
-          .homatics-remote-body .dpadbutton {
-            background: #adadad;
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            -webkit-tap-highlight-color: transparent;
-          }
-
-          .HO2 .dpadbutton,
-          .HO4 .dpadbutton {
-            background: rgb(216 216 216);
-            outline: solid rgb(200 200 200) calc(var(--sz)* 0.0714rem);
-          }
-
-          .homatics-remote-body .dpadbutton:active {
-            background: rgb(153 153 153);
-            box-shadow: inset #4f4f4f 0 0 calc(var(--sz)* 0.35rem) 0px;
-            transform: none;
-            filter: none;
-            overflow: hidden;
-            backdrop-filter: none;
-            appearance: none;
-          }
-
-          .HO2 .dpadbutton:active,
-          .HO4 .dpadbutton:active {
-            background: rgb(200 200 200);
-            box-shadow: none;
-            outline: solid #989898 calc(var(--sz)* 0.0714rem);
-          }
-
-          .homatics-remote-body .centerbutton {
-            background: linear-gradient(180deg, #c8c8c8 0%, rgba(255, 255, 255, 1) 100%);
-            border: solid #a1a1a1 calc(var(--sz)* 0.25rem);
-            width: calc(var(--sz)* 5.13rem);
-            height: calc(var(--sz)* 5.13rem);
-            margin: 0px;
-            position: absolute;
-            box-sizing: border-box;
-            isolation: isolate;
-          }
-
-          .HO2 .centerbutton,
-          .HO4 .centerbutton {
-            background: linear-gradient(0deg, rgb(48 48 48) 26%, rgb(39 39 39) 50%, rgb(33 33 33) 75%);
-            border: solid #252525 calc(var(--sz)* 0.25rem); 
-          }
-
-          .homatics-remote-body .centerbutton:active {
-            transform: none;
-            filter: brightness(0.92);
-            border: solid #b3b3b3 calc(var(--sz)* 0.29rem);
-          }
-
-          .HO2 .centerbutton:active,
-          .HO4 .centerbutton:active {
-            filter: brightness(0.8);
-            border: solid #000 calc(var(--sz)* 0.29rem); 
-          }
-
-          .homatics-remote-body #home-button {
-            align-self: end;
-            margin-top: calc(var(--sz)* 1.1rem);
-            z-index: 10;  /* Required for companion app to prevent accidental push of down button */
-          }
-
-          .homatics-remote-body .volumeChannelSection {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            display: grid;
-            grid-template-columns: 33% 1fr 33%;
-            grid-template-areas: "vol-up   mute ch-up"
-                                 "vol-down mute ch-down";
-            grid-row-gap: 0;
-            width: 100%;
-            justify-items: center;
-            align-items: center;
-          }
-
-          .homatics-remote-body #volume-up-button-container {
-            grid-area: vol-up;
-            margin-bottom: 0;
-            border-bottom: 0;
-            font-size: calc(var(--sz)* 2rem);
-          }
-
-          .homatics-remote-body #volume-up-button-container ha-icon,
-          .homatics-remote-body #channel-up-button-container ha-icon {
-            margin-top: calc(var(--sz)* -1rem);
-          }
-
-          .homatics-remote-body #voltext,
-          .homatics-remote-body #chtext {
-            max-width: calc(var(--sz)* 1.5rem);
-            max-height: calc(var(--sz)* 1rem);
-            position: absolute;
-            padding-left: calc(var(--sz)* 1.0rem);
-            pointer-events: none;
-            margin-top: calc(var(--sz)* -0.5rem);
-          }
-
-          .homatics-remote-body #voltext > * {
-            fill: rgb(106 106 106);
-          }
-
-          .homatics-remote-body.HO2 #voltext > *, 
-          .homatics-remote-body.HO4 #voltext > * {
-            fill: rgb(245, 245, 245);
-          }
-
-          .homatics-remote-body #chtext {
-            max-width: calc(var(--sz)* 1rem);
-            padding-left: calc(var(--sz)* 1.25rem);
-          }
-
-          .homatics-remote-body #chtext > * {
-            fill: rgb(106 106 106);
-          }
-
-          .homatics-remote-body.HO2 #chtext > *, 
-          .homatics-remote-body.HO4 #chtext > * {
-            fill: rgb(245, 245, 245);
-          }
-
-          .homatics-remote-body #channel-up-button-container {
-            grid-area: ch-up;
-            margin-bottom: 0;
-            border-bottom: 0;
-          }
-
-          .homatics-remote-body #mute-button {
-            grid-area: mute;
-            height: calc(var(--sz)* 2.6rem);
-            width: calc(var(--sz)* 2.6rem);
-          }
-
-          #soundeqtext {
-            grid-area: mute;
-            max-width: calc(var(--sz)* 3.5rem);
-            max-height: calc(var(--sz)* 0.7rem);
-            margin-top: calc(var(--sz)* 4.1rem);
-            fill: rgb(106 106 106);
-          }
-
-          .HO2 #soundeqtext, .HO4 #soundeqtext {
-            fill: rgb(245, 245, 245);
-          }
-
-          .homatics-remote-body #volume-down-button {
-            grid-area: vol-down;
-            border-top: 0;
-            font-size: calc(var(--sz)* 2rem);
-          }
-
-          .homatics-remote-body #volume-down-button ha-icon,
-          .homatics-remote-body #channel-down-button ha-icon {
-            margin-bottom: calc(var(--sz)* -1rem);
-          }
-
-          .homatics-remote-body #channel-down-button {
-            grid-area: ch-down;
-            border-top: 0;
-          }
-
-          .homatics-remote-body #volume-down-button, 
-          .homatics-remote-body #channel-down-button {
-            box-shadow: rgb(0 0 0 / 15%) 0px calc(var(--sz)* 0.063rem) calc(var(--sz)* 0.1rem);
-          }
-
-          .homatics-remote-body #volume-up-button, 
-          .homatics-remote-body #channel-up-button {
-            box-shadow: none;
-          }
-
-          .homatics-remote-body #volume-up-button:active, 
-          .homatics-remote-body #channel-up-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgba(255, 255, 255, 1) 0%, rgba(240, 240, 240, 1) 95%);
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            border-bottom: 0;
-          }
-
-          .homatics-remote-body.HO2 #volume-up-button:active, 
-          .homatics-remote-body.HO2 #channel-up-button:active,
-          .homatics-remote-body.HO4 #volume-up-button:active, 
-          .homatics-remote-body.HO4 #channel-up-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgb(46 46 46) 0%, rgb(38 38 38) 95%);
-            border: solid rgb(0 0 0) calc(var(--sz)* 0.08rem);
-            border-bottom: 0;
-          }
-
-          .homatics-remote-body #volume-down-button:active, 
-          .homatics-remote-body #channel-down-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgba(240, 240, 240, 1) 0%, rgba(255, 255, 255, 1) 95%);
-            box-shadow: none;
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            border-top: 0;
-          }
-
-          .homatics-remote-body.HO2 #volume-down-button:active, 
-          .homatics-remote-body.HO2 #channel-down-button:active,
-          .homatics-remote-body.HO4 #volume-down-button:active, 
-          .homatics-remote-body.HO4 #channel-down-button:active {
-            filter: none;
-            background: linear-gradient(180deg, rgb(46 46 46) 0%, rgb(38 38 38) 95%);
-            box-shadow: none;
-            border: solid rgb(0 0 0) calc(var(--sz)* 0.08rem);
-            border-top: 0;
-          }
-
-          .homatics-remote-body .afappsgrid {
-            margin-bottom: calc(var(--sz)* 7rem);
-          }
-
-          .homatics-remote-body .srcButton {
-            border: solid #a7a7a7 calc(var(--sz) * 0.0714rem);
-          }
-
-          .homaticsLogo {
-            position: absolute;
-            bottom: calc(var(--sz)* 3rem);
-            width: calc(var(--sz)* 12.286rem);
-            text-align: center;
-          }
-
-          .homaticsLogo svg {
-            max-width: calc(var(--sz)* 6.5rem);
-            max-height: calc(var(--sz)* 3.2rem);
-            stroke: rgb(161 161 161);
-          }
-
-          .HO2 .homaticsLogo svg,
-          .HO4 .homaticsLogo svg {
-            stroke: #000;
-          }
-
-          .homatics-remote-body .deviceNameBottom {
-            position: absolute;
-            bottom: calc(var(--sz)* 3.5rem);
-            width: calc(var(--sz)* 12.286rem);
-            text-align: center;
-          }
-
-          .homatics-remote-body .srcButton {
-            border-color: rgb(255 255 255 / 0%);
-          }
-
-          .homatics-remote-body .srcButton.appActive {
-            box-shadow: rgb(0 0 0 / 13%) 0 calc(var(--sz)* 0.214rem) calc(var(--sz)* 0.1428rem) 0, white 0 0 calc(var(--sz)* 0.857rem) calc(var(--sz)* 0.429rem);
-            border-color: #e6e6e6;
-            animation-name: homatics_flash_border;
-            animation-duration: 2s;
-            animation-timing-function: linear;
-            animation-iteration-count: infinite;
-          }
-
-          .HO2 .srcButton.appActive, .HO4 .srcButton.appActive {
-            box-shadow: rgb(255 255 255 / 0%) 0 calc(var(--sz)* 0.214rem) calc(var(--sz)* 0.1428rem) 0, rgb(255 255 255 / 31%) 0 0 calc(var(--sz)* 0.857rem) calc(var(--sz)* 0.429rem);
-          }
-
-          @keyframes homatics_flash_border {
-            0% {
-              border-color: rgb(0 0 0 / 16%);
-            }
-            50% {
-              border-color: #fff;
-            }
-            100% {
-              border-color: rgb(0 0 0 / 16%);
-            }
-          }
-
-          /* end Homatics styles */
-
-
-          /* onn. styles */
-          .remote-body.ON1, .remote-body.ON2 {
-            align-content: start;
-            grid-row-gap: calc(var(--sz)* 1rem);
-            background: #ebebea;
-            border-color: #dcdcdc;
-            border-radius: calc(var(--sz)* 2.8rem);
-            min-height: calc(var(--sz)* 48.5rem);
-            padding: calc(var(--sz) * 1.1rem) calc(var(--sz) * 0.714rem) calc(var(--sz) * 2.143rem) calc(var(--sz) * 0.714rem);
-            box-shadow: 0 calc(var(--sz) * 0.214rem) calc(var(--sz) * 0.214rem) rgb(0 0 0 / 10%);
-          }
-
-          .remote-body.ON2 {
-            background: #252525;
-            border-color: #2f2f2f;
-          }
-
-          .ON1 .remote-button, .ON2 .remote-button {
-            background: #fff;
-            color: rgb(106, 106, 106);
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            box-shadow: rgb(0 0 0 / 15%) 0px calc(var(--sz)* 0.063rem) calc(var(--sz)* 0.188rem);
-          }
-
-          .ON2 .remote-button {
-            background: #2f2f2f;
-            border: solid rgb(15 15 15) calc(var(--sz)* 0.0714rem);
-          }
-
-          .ON1 .remote-button:active, .ON2 .remote-button:active {
-            box-shadow: inset rgb(0 0 0 / 42%) 0px calc(var(--sz)* 0.1rem) calc(var(--sz)* 0.188rem);
-            filter: brightness(0.94);
-            border: solid rgb(232 232 232) calc(var(--sz)* 0.0714rem);
-          }
-
-          .ON2 .remote-button:active {
-            border: solid rgb(10 10 10) calc(var(--sz)* 0.0714rem);
-          }
-
-          .remote-body.ON1 .remote-button.litbutton {
-            background: #ffffe7;
-          }
-
-          .remote-body.ON1 #power-button.litbutton > ha-icon,
-          .remote-body.ON2 .remote-button.litbutton > ha-icon {
-            color: #017374 !important;
-          }
-
-          .remote-body.ON2 #power-button.litbutton > ha-icon {
-            color: #ebef66 !important;
-          }
-
-          .remote-body.ON1 .remote-button:active > ha-icon,
-          .remote-body.ON2 .remote-button:active > ha-icon {
-            transform: scale(calc(var(--sz)* 0.90));
-          }
-
-          .remote-body.ON1 .remote-button.dark,
-          .remote-body.ON2 .remote-button.dark {
-            background: linear-gradient(180deg, rgba(69,69,69,1) 26%, rgba(55,55,55,1) 50%, rgba(45,45,45,1) 75%);
-          }
-
-          .remote-body.ON2 .remote-button.light {
-            background: linear-gradient(0deg, #c8c8c8 0%, rgba(255, 255, 255, 1) 100%);
-          }
-
-          .remote-body.ON1 .remote-button > ha-icon {
-            color: rgb(106 106 106);
-          }
-
-          .remote-body.ON2 .remote-button > ha-icon {
-            color: rgb(245 245 245);
-          }
-
-          .remote-body.ON1 .remote-button.dark > ha-icon {
-            color: #ebebea;
-          }
-
-          .remote-body.ON2 .remote-button.light > ha-icon {
-            color: #464646;
-          }
-
-          .remote-body.ON1 .remote-button.dark.litbutton {
-            background: #004040;
-          }
-
-          .remote-body.ON1 .remote-button.litbutton > ha-icon,
-          .remote-body.ON1 .remote-button.dark.litbutton > ha-icon,
-          .remote-body.ON2 .remote-button.dark.litbutton > ha-icon {
-            color: #ffffab;
-          }
-
-          .ON1 .directionButtonContainer, .ON2 .directionButtonContainer {
-            box-shadow: rgb(0 0 0 / 73%) calc(var(--sz)* 0.025rem) calc(var(--sz)* 0.025rem) calc(var(--sz)* 0.025rem);
-            background: black;
-          }
-
-          .ON1 .directionButtonContainer:has(#down-button:active), .ON2 .directionButtonContainer:has(#down-button:active) {
-            box-shadow: none;
-          }
-
-          .ON1 .dpadContainer, .ON2 .dpadContainer {
-            align-items: center;
-            justify-items: center;
-            position: relative;
-            margin-top: calc(var(--sz)* -1.5rem);
-            margin-bottom: calc(var(--sz)* -1.5rem);
-            isolation: isolate;
-          }
-
-          .ON1 .dpadbutton, .ON1 .dpadbutton:active,
-          .ON2 .dpadbutton, .ON2 .dpadbutton:active {
-            all: unset;
-            cursor: pointer;
-            width: calc(var(--sz)* 5.5714rem);
-            height: calc(var(--sz)* 5.5714rem);
-            outline: solid #2e2e2e calc(var(--sz)* 0.0714rem);
-          }
-
-          .ON1 .dpadbutton, .ON2 .dpadbutton {
-            background: rgba(55, 55, 55, 1);
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            -webkit-tap-highlight-color: transparent;
-          }
-
-          .ON2 .dpadbutton {
-            background: rgb(216 216 216);
-            outline: solid rgb(200 200 200) calc(var(--sz)* 0.0714rem);
-          }
-
-          .ON1 .dpadbutton:active, .ON2 .dpadbutton:active {
-            background: rgba(45, 45, 45, 1);
-            box-shadow: inset #161616 0 0 calc(var(--sz)* 0.35rem) 0px;
-            transform: none;
-            filter: none;
-            overflow: hidden;
-            backdrop-filter: none;
-            appearance: none;
-          }
-
-          .ON2 .dpadbutton:active {
-            background: rgb(200 200 200);
-            box-shadow: none;
-            outline: solid #989898 calc(var(--sz)* 0.0714rem);
-          }
-
-          .ON1 .centerbutton, .ON2 .centerbutton {
-            background: linear-gradient(180deg, #c8c8c8 0%, rgba(255, 255, 255, 1) 100%);
-            border: solid #2b2b2b calc(var(--sz)* 0.25rem);
-            width: calc(var(--sz)* 5.13rem);
-            height: calc(var(--sz)* 5.13rem);
-            margin: 0px;
-            position: absolute;
-            box-sizing: border-box;
-            isolation: isolate;
-          }
-
-          .ON2 .centerbutton {
-            background: linear-gradient(0deg, rgb(48 48 48) 26%, rgb(39 39 39) 50%, rgb(33 33 33) 75%);
-          }
-
-          .ON1 .centerbutton:active, .ON2 .centerbutton:active {
-            transform: none;
-            filter: brightness(0.92);
-            border: solid #2b2b2b calc(var(--sz)* 0.29rem);
-          }
-
-          .ON2 .centerbutton:active {
-            filter: brightness(0.8);
-          }
-
-          .ON1 #power-button, .ON1 #input-button,
-          .ON2 #power-button, .ON2 #magic-star-button {
-            height: calc(var(--sz)* 2.5rem);
-            width: calc(var(--sz)* 2.5rem);
-          }
-
-          .ON1 #power-button, .ON2 #power-button {
-            justify-self: left;
-          }
-
-          .ON1 .micNLight, .ON2 .micNLight {
-            display: grid;
-            align-content: space-between;
-            padding: calc(var(--sz) * 0.25rem) 0;
-          }
-
-          .ON1 .activityLight, .ON2 .activityLight {
-            background: #adff87;
-            box-shadow: lime 0 0 calc(var(--sz)* 0.6rem) calc(var(--sz)* 0.05rem);
-            border-radius: 100%;
-            height: calc(var(--sz)* 0.4rem);
-            aspect-ratio: 1 / 1;
-            opacity: 0;
-          }
-
-          .ON1 .micHole, .ON2 .micHole {
-            background: black;
-            border-radius: 100%;
-            height: calc(var(--sz)* 0.3rem);
-            aspect-ratio: 1 / 1;
-            align-self: end;
-            justify-self: center;
-          }
-
-          .ON1 #input-button, .ON2 #magic-star-button {
-            justify-self: right;
-          }
-
-          .ON1 #profile-button, .ON1 #settings-button,
-          .ON2 #profile-button, .ON2 #settings-button {
-            align-self: end;
-          }
-
-          .ON1 #keyboard-button, .ON2 #keyboard-button {
-            height: calc(var(--sz)* 3.572rem);
-            width: calc(var(--sz)* 3.572rem);
-            margin-bottom: calc(var(--sz)* 1.1rem);
-          }
-
-          .ON1 #home-button, .ON2 #home-button {
-            align-self: end;
-            margin-top: calc(var(--sz)* 1.1rem);
-            z-index: 10;  /* Required for companion app to prevent accidental push of down button */
-          }
-
-          .ON1 .volumeChannelSection, .ON2 .volumeChannelSection {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            display: grid;
-            grid-template-columns: 33% 1fr 33%;
-            grid-template-areas: "vol-up   mute ch-up"
-                                 "vol-down mute ch-down";
-            grid-row-gap: 0;
-            width: 100%;
-            justify-items: center;
-            align-items: center;
-          }
-
-          .ON1 #volume-up-button, .ON2 #volume-up-button {
-            grid-area: vol-up;
-            margin-bottom: 0;
-            border-bottom: 0;
-            font-size: calc(var(--sz)* 2rem);
-          }
-
-          .ON1 #channel-up-button, .ON2 #channel-up-button {
-            grid-area: ch-up;
-            margin-bottom: 0;
-            border-bottom: 0;
-          }
-
-          .ON1 #mute-button, .ON2 #mute-button {
-            grid-area: mute;
-            height: calc(var(--sz)* 2.6rem);
-            width: calc(var(--sz)* 2.6rem);
-          }
-
-          .ON1 #volume-down-button, .ON2 #volume-down-button {
-            grid-area: vol-down;
-            border-top: 0;
-            font-size: calc(var(--sz)* 2rem);
-          }
-
-          .ON1 #channel-down-button, .ON2 #channel-down-button {
-            grid-area: ch-down;
-            border-top: 0;
-          }
-
-          .ON1 #volume-up-button:active, .ON1 #channel-up-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgba(255, 255, 255, 1) 0%, rgba(240, 240, 240, 1) 95%);
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            border-bottom: 0;
-          }
-
-          .ON2 #volume-up-button:active, .ON2 #channel-up-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgb(46 46 46) 0%, rgb(38 38 38) 95%);
-            border-bottom: 0;
-          }
-
-          .ON1 #volume-down-button:active, .ON1 #channel-down-button:active {
-            filter: none;
-            background: linear-gradient(0deg, rgba(240, 240, 240, 1) 0%, rgba(255, 255, 255, 1) 95%);
-            box-shadow: none;
-            border: solid rgb(186 186 186) calc(var(--sz)* 0.0714rem);
-            border-top: 0;
-          }
-
-          .ON2 #volume-down-button:active, .ON2 #channel-down-button:active {
-            filter: none;
-            background: linear-gradient(180deg, rgb(46 46 46) 0%, rgb(38 38 38) 95%);
-            box-shadow: none;
-            border-top: 0;
-          }
-
-          .ON1 .afappsgrid, .ON2 .afappsgrid {
-            align-content: start;
-            margin: calc(var(--sz)* 0.75rem) 0 calc(var(--sz)* 3.75rem) 0;
-          }
-
-          .ON1 .srcButton {
-            border-color: #ccc;
-          }
-
-          .ON2 .srcButton {
-            border-color: #292929;
-          }
-
-          .ON1 .srcButton.appActive, .ON2 .srcButton.appActive {
-            box-shadow: rgb(0 0 0 / 13%) 0 calc(var(--sz)* 0.214rem) calc(var(--sz)* 0.1428rem) 0, white 0 0 calc(var(--sz)* 0.857rem) calc(var(--sz)* 0.429rem);
-            border-color: #e6e6e6;
-            animation-name: flash_border;
-            animation-duration: 2s;
-            animation-timing-function: linear;
-            animation-iteration-count: infinite;
-          }
-
-          .ON2 .srcButton.appActive {
-            box-shadow: rgb(255 255 255 / 0%) 0 calc(var(--sz)* 0.214rem) calc(var(--sz)* 0.1428rem) 0, rgb(255 255 255 / 31%) 0 0 calc(var(--sz)* 0.857rem) calc(var(--sz)* 0.429rem);
-          }
-
-          @keyframes flash_border {
-            0% {
-              border-color: rgb(0 0 0 / 16%);
-            }
-            50% {
-              border-color: #fff;
-            }
-            100% {
-              border-color: rgb(0 0 0 / 16%);
-            }
-          }
-
-          .ON1 .srcButton:active, .ON2 .srcButton:active {
-            box-shadow: inset rgb(0 0 0 / 25%) 0 calc(var(--sz)* 0.214rem) calc(var(--sz)* 0.1428rem) 0;
-          }
-
-          .ON1 .deviceNameTop, .ON2 .deviceNameTop {
-            grid-column: 1 / 4;
-            margin: calc(var(--sz)* -1rem) 0;
-          }
-
-          .ON1 .deviceNameBottom, .ON2 .deviceNameBottom {
-            position: absolute;
-            bottom: calc(var(--sz)* 0.75rem);
-            margin: 0;
-            width: calc(var(--sz)* 12.286rem);
-            text-align: center;
-          }
-
-          .onnLogo {
-            position: absolute;
-            bottom: calc(var(--sz)* 2rem);
-            width: calc(var(--sz)* 12.286rem);
-            text-align: center;
-          }
-
-          .onnLogo svg {
-            max-width: calc(var(--sz)* 5rem);
-            max-height: calc(var(--sz)* 2rem);
-          }
-
-          .ON2 .onnLogo svg {
-            fill: #949494;
-          }
-          /* end onn. styles */
-
-          ${unsafeCSS(launcherCSS)}
-
-          .functionFindRemoteButton, .functionMuteButton, .functionRebootButton,
-          .functionSystemUpdateButton, .functionKeyboardButton, .functionMenuButton, .functionSettingsButton {
-            color: #ff0000;
-            font-weight: bold;
-            background: #000;
-            border: solid calc(var(--sz) * 0.1rem) #850000;
-            display: block;
-          }
-
-          .functionAppSwitchButton, .functionAppManageButton {
-            background: #000;
-          }
-
-          .ON1 .functionRebootButton, .ON2 .functionRebootButton {
-            background: #fff;
-          }
-
-          .ON1 .functionSearchGoogleTVButton, .ON1 .functionCaptionsButton, .ON1 .functionpairingButton,
-          .ON2 .functionSearchGoogleTVButton, .ON2 .functionCaptionsButton, .ON2 .functionpairingButton {
-            background: #fff;
-            color: #000;
-          }
-
-          .roku-remote-body .functionMuteButton, .roku-remote-body .functionVolumeUpButton, .roku-remote-body .functionVolumeDownButton, .roku-remote-body .functionFindRemoteButton,
-          .roku-remote-body .searchButton, .roku-remote-body .functionChannelUpButton, .roku-remote-body .functionChannelDownButton {
-            color: #c6c6c6;
-            font-weight: bold;
-            background: #662d91;
-            border: 0;
-            filter: none !important;
-            display: grid;
-          }
-
-          .functionAppleSettingsButton {
-            background: linear-gradient(0deg, rgba(143,143,148,1) 0%, rgba(228,228,233,1) 100%);
-            border: solid #838383 calc(var(--sz) * 0.05rem) !important;
-          }
-
-          .functionKeyboardButton {
-            display: inherit;
-          }
-
-          .functionFindRemoteButton > ha-icon, .functionMuteButton > ha-icon, .functionRebootButton > ha-icon, .functionSettingsButton > ha-icon {
-            display: none;
-          }
-
-          .ON1 .functionSystemUpdateButton, .ON2 .functionSystemUpdateButton {
-            background: #fff;
-            color: #000;
-          }
-
-          .functionAppSwitchButton:active, .functionFindRemoteButton:active, .functionMuteButton:active, .functionRebootButton:active, .functionSettingsButton:active {
-            filter: none;
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.142rem) rgb(255 255 255 / 20%) !important;
-          }
-
-          .ON1 .functionFindRemoteButton,
-          .ON2 .functionFindRemoteButton {
-            color: yellow;
-            border: solid calc(var(--sz) * 0.1rem) #017374;
-          }
-
-          .shield-remote-body .functionFindRemoteButton, .shield-remote-body .functionMuteButton, .shield-remote-body .functionSystemUpdateButton,
-          .shield-remote-body .functionMuteButton, .shield-remote-body .functionRebootButton, .shield-remote-body .functionSettingsButton, .shield-remote-body .functionCaptionsButton {
-            color: rgb(153, 231, 0);
-            border: solid calc(var(--sz) * 0.1rem) #456800;
-          }
-
-          .functionFindRemoteButton {
-            font-size: calc(var(--sz) * .75rem);
-          }
-          .shield-remote-body .functionFindRemoteButton {
-            font-size: calc(var(--sz) * .75rem);
-            --mdc-icon-size: calc(var(--sz) * 1.4rem);
-          }
-          .roku-remote-body .functionFindRemoteButton {
-            font-size: calc(var(--sz) * .6rem);
-          }
-
-          .functionMuteButton {
-            font-size: calc(var(--sz) * 1rem);
-          }
-          .shield-remote-body .functionMuteButton {
-            font-size: calc(var(--sz) * 1.2rem);
-            --mdc-icon-size: calc(var(--sz) * 1.6rem);
-          }
-
-          .functionRebootButton {
-            font-size: calc(var(--sz) * 1rem);
-          }
-          .shield-remote-body .functionRebootButton {
-            font-size: calc(var(--sz) * 1rem);
-            --mdc-icon-size: calc(var(--sz) * 1.6rem);
-          }
-          .chromecast-remote-body .functionRebootButton {
-            font-size: calc(var(--sz) * 0.95rem);
-            background: #fff;
-          }
-
-          .apple-remote-body .functionAppSwitchButton {
-            background: rgb(33, 33, 33);
-          }
-
-          .functionSettingsButton {
-            font-size: calc(var(--sz) * .75rem);
-          }
-          .shield-remote-body .functionSettingsButton {
-            font-size: calc(var(--sz) * 0.86rem);
-            --mdc-icon-size: calc(var(--sz) * 1.5rem);
-          }
-          .chromecast-remote-body .functionSettingsButton, .chromecast-remote-body .functionSystemUpdateButton {
-            font-size: calc(var(--sz) * 0.7rem);
-            background: #fff;
-          }
-
-          .functionControlCenterButton {
-            background: rgb(215 215 215);
-            border: solid #838383 calc(var(--sz) * 0.05rem) !important;
-          }
-
-          .remote-logo {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            padding: calc(var(--sz) * 2.5rem) calc(var(--sz) * 2.357rem) 0 calc(var(--sz) * 2.357rem);
-            width: calc(var(--sz) * 7.5714rem);
-          }
-
-          .AF6 .remote-logo {
-            padding: calc(var(--sz) * .75rem) calc(var(--sz) * 2.357rem) 0 calc(var(--sz) * 2.357rem);
-          }
-
-          .miLogo, .xiaomiLogo {
-            align-self: flex-end;
-            padding-bottom: calc(var(--sz) * 1.3rem)
-          }
-
-          .miLogo {
-            width: calc(var(--sz) * 2.75rem);
-          }
-
-          .ns1-body #keyboard-button {
-            margin-top: calc(var(--sz) * 1rem);
-            height: calc(var(--sz) * 5rem);
-            width: calc(var(--sz) * 5rem);
-            --mdc-icon-size: 34px;
-          }
-
-          .ns1-body .remote-button:active {
-            border: solid #395600 0.0714rem;
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(153 231 0 / 20%);
-          }
-
-          .ns1-body .remote-button:active > ha-icon {
-            color: #99e700 !important;
-          }
-
-          .litbutton {
-              border: solid #4b4c3c 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 255 25 / 15%);
-          }
-          .litbutton > ha-icon {
-            color: yellow !important;
-          }
-
-          .shield-remote-body .litbutton {
-              border: solid #500101 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 25 25 / 15%);
-          }
-
-          .shield-remote-body .litbutton > ha-icon,
-          .roku-remote-body #power-button.litbutton > ha-icon {
-            color: red !important;
-          }
-
-          .roku-remote-body #power-button.litbutton {
-            border: 0.0714rem solid rgb(92 0 0);
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(229 58 58 / 31%);
-          }
-
-          .roku-remote-body.RTR #power-button {
-            background: #810000;
-          }
-
-          .roku-remote-body.RTR #power-button > ha-icon {
-            color: #c6c6c6;
-          }
-
-          .roku-remote-body.RTR #power-button.litbutton {
-            background: rgb(159, 0, 0);
-            border: 0.0714rem solid rgb(139, 62, 62);
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(229 164 164 / 31%);
-          }
-
-          .roku-remote-body.RTR #power-button.litbutton > ha-icon {
-            color: #fff !important;
-          }
-
-          .roku-remote-body #home-button.litbutton, .roku-remote-body #playpause-button.litbutton {
-            box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 255 255 / 20%);
-          }
-
-          .roku-remote-body #home-button.litbutton > ha-icon, .roku-remote-body #playpause-button.litbutton > ha-icon {
-            color: white !important;
-          }
-
-          .XM2 .litbutton {
-              border: solid #5c2b00 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(229 124 58 / 31%);
-          }
-
-          .XM2 .litbutton > ha-icon, .XM2 .litbutton > .mdiSubstituteIconWrapper {
-            color: #ff7700 !important;
-          }
-
-
-          .chromecast-remote-body .litbutton, .chromecast-remote-body .appActive {
-              position: relative;
-              z-index: 2;
-          }
-
-          .chromecast-remote-body .appActive {
-            border: transparent;
-          }
-
-          .chromecast-remote-body .litbutton::before, .chromecast-remote-body .appActive::before {
-            content: "";
-            position: absolute;
-            z-index: -1;
-            inset: 0.25rem;
-            background: conic-gradient(from 0deg, rgba(66,133,244,1) 0%, rgba(219,68,55,1) 25%, rgba(244,180,0,1) 50%, rgba(15,157,88,1) 75%, rgba(66,133,244,1) 100%);
-            filter: blur(0.3rem) contrast(3);
-            transition: opacity 0.3s ease 0s;
-            border-radius: inherit;
-            animation: spin 7s linear infinite;
-          }
-
-          .chromecast-remote-body .appActive::before {
-            inset: calc(var(--sz) * -0.25rem);
-            filter: contrast(3);
-          }
-
-          @keyframes spin {
-            0 {
-              transform: rotate(0deg);
-            }
-            100% {
-              transform: rotate(360deg);
-            }
-          }
-
-          .chromecast-remote-body .litbutton::after, .chromecast-remote-body .appActive::after {
-              content: "";
-              z-index: -1;
-              position: absolute;
-              top: 0;
-              right: 0;
-              bottom: 0;
-              left: 0;
-              background: inherit;
-              border-radius: inherit;
-              inset: 0.15rem;
-          }
-
-          .chromecast-remote-body .litbutton > ha-icon {
-            color: #d70000 !important;
-          }
-
-          .apple-remote-body .litbutton {
-              background: rgb(255 255 255 / 25%) !important;
-              border: 0.01rem solid gray !important;
-              box-shadow: none;
-          }
-
-          .apple-remote-body .litbutton > ha-icon {
-              color: rgb(33, 33, 33) !important;
-          }
-
-          .shield-remote-body.ns1-body .litbutton {
-              border: solid #395600 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(153 231 0 / 20%);
-          }
-
-          .shield-remote-body.ns1-body .litbutton > ha-icon {
-            color: #99e700 !important;
-          }
-
-          .dimlitbutton {
-              border: solid #34342b calc(var(--sz) * 0.0714rem);
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 255 116 / 15%);
-          }
-          .dimlitbutton > ha-icon {
-            color: #e5e59a !important;
-          }
-
-          .apple-remote-body .dimlitbutton {
-              border: 0.01rem solid gray !important;
-              background: none !important;
-              box-shadow: none;
-          }
-
-          .apple-remote-body .dimlitbutton > ha-icon {
-              color: rgb(33, 33, 33) !important;
-          }
-
-          .shield-remote-body .dimlitbutton {
-              border: solid #3c1818 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 25 25 / 11%);
-          }
-
-          .shield-remote-body .dimlitbutton > ha-icon {
-            color: #ff7575 !important;
-          }
-
-          .XM2 .dimlitbutton {
-              border: solid #463327 0.0714rem;
-              box-shadow: 0 0 calc(var(--sz) * 0.857rem) calc(var(--sz) * 0.0714rem) rgb(255 143 36 / 21%);
-          }
-
-          .XM2 .dimlitbutton > ha-icon {
-            color: #b36d41 !important;
-          }
-
-          ha-icon {
-            pointer-events: none;
-            transform: scale(var(--sz));
-          }
-
-          .eightygap {
-            height: calc(var(--sz) * 5.7143rem);
-          }
-  `;
-//`
+  static styles = remoteStyles;
 
     getState() {
       if(this._config.device_family === 'none' || this._config.entity === 'none') { return; }
@@ -3683,9 +434,8 @@ class FiremoteCard extends LitElement {
     const appId = this.getOpenAppID();
     const deviceType = this._config.device_type;
     const scale = this._viewportScaling ? 1 : (parseInt(this._config.scale) || 100)/100;
-    var launcherscaleoffset = 0;
-    if (this._config.app_launcher_relative_size) { launcherscaleoffset = (parseInt(this._config.app_launcher_relative_size) || 100)/100 };
-    const launcherscale = scale + launcherscaleoffset;
+    const launcherOffset = Number.parseFloat(this._config.app_launcher_relative_size);
+    const launcherscale = scale + (Number.isFinite(launcherOffset) ? launcherOffset / 100 : 0);
     const overrides = this._config.button_overrides;
     var buttonHidingCss = '';
     if(overrides && typeof overrides === 'object') {
@@ -3781,40 +531,30 @@ class FiremoteCard extends LitElement {
     }
 
     // Reuse the catalog for this configuration, including inputs and custom launchers
-    const appmap = getAppMap(this._config);
+    let appmap;
 
     // get app button details from appmap json
-    function getAppButtonData(config, configvalue, want) {
-      if(appmap.has(configvalue)) {
-        var deviceFamily = config["device_family"];
-        var familySpecificAppData = appmap.get(configvalue)[deviceFamily];
-        if(want=="active") {
-          if (config["device_type"]=="fire_tv_stick_4k_max_second_gen" || config["device_type"]=="fire_tv_stick_4k_second_gen") {
-              return "appActiveUnknown";
-          }
-          if (typeof appId != 'string') { return };
-          if(familySpecificAppData && !(appmap.get(configvalue).androidName) && !(appmap.get(configvalue).androidName2) && !(appmap.get(configvalue).appName)) {
-            return (appId == familySpecificAppData["androidName"] || appId == familySpecificAppData["androidName2"] || appId == familySpecificAppData["appName"]) ? "appActive" : "";
-          }
-          else {
-            return (appId == appmap.get(configvalue).androidName || appId == appmap.get(configvalue).androidName2) || appId == appmap.get(configvalue).appName ? "appActive" : "";
-          }
-        }
-        else {
-          if (appmap.get(configvalue)[want]) {
-            return appmap.get(configvalue)[want];
-          }
-          else if(familySpecificAppData) {
-            return familySpecificAppData[want];
-          }
-        }
+    function getAppButtonData(config, key, attribute) {
+      if (!key) return '';
+      appmap ||= getAppMap(config);
+      const app = appmap.get(key);
+      if (!app) return ' ';
+      const family = app[config.device_family];
+      if (attribute !== 'active') return app[attribute] || family?.[attribute];
+      if (['fire_tv_stick_4k_max_second_gen', 'fire_tv_stick_4k_second_gen'].includes(config.device_type)) {
+        return 'appActiveUnknown';
       }
-      else {
-        return ' ';
-      }
+      if (typeof appId !== 'string') return '';
+      const details = family && !app.androidName && !app.androidName2 && !app.appName ? family : app;
+      return [details.androidName, details.androidName2, details.appName].includes(appId) ? 'appActive' : '';
     }
 
+    const discoveredApps = deviceApps(this.hass, this._config);
+
     function drawAppLaunchButtons(e, config, cols=3, max=6) {
+        if (getDeviceAttribute('defaultRemoteStyle') === 'AL1' || getDeviceAttribute('defaultRemoteStyle') === 'AL2') {
+          max = launcherSlotCount(config);
+        }
         var spanclass = "three-col-span afappsgrid";
         if(cols == 2) {
           spanclass = "two-col-span nsappsgrid";
@@ -3831,37 +571,34 @@ class FiremoteCard extends LitElement {
           }
         }
         var buttonStyle = 'button';
-        const appLaunchButtons = new Map();
+        const appLaunchButtons = [];
         for(let i=1; i<=max; i++) {
-          var appid = config["app_launch_"+i] || '';
-          appLaunchButtons.set("confBtn"+i, appid);
+          const appid = config["app_launch_" + i];
+          appLaunchButtons.push(typeof appid === 'string' ? appid : '');
         }
 
         if (['apple-tv', 'chromecast'].includes(config.device_family)) buttonStyle = 'button-round';
         function sourceButton(val) {
           if (!val.startsWith('source:')) return;
-          const source = decodeURIComponent(val.slice(7));
-          const apps = deviceApps(e.hass, config) || [];
-          // Selections made before installing the backend may contain a display name.
-          const app = apps.find(app => app.id === source) || apps.find(app => app.name === source);
+          const source = decodeSource(val);
+          const app = resolveDeviceApp(discoveredApps, source);
           const name = app?.name || source;
           return html`<button class="srcButton ${[appId, e.hass.states[config.entity]?.attributes.source].includes(source) ? 'appActive' : ''}"
             title=${name} aria-label=${name} @click=${() => {
               fireEvent(e, 'haptic', 'light');
               e.hass.callService('media_player', 'select_source', { entity_id: appCatalogState(e.hass, e._config)?.attributes.firemote_entity || e._config.entity, source: app?.id || source });
             }}>${app?.icon ? html`<img class="deviceAppIcon" src=${e.hass.hassUrl ? e.hass.hassUrl(app.icon) : app.icon}
-              alt="" @load=${event => { event.target.hidden = false; }} @error=${event => { event.target.hidden = true; }}>` : ''}<span class="deviceAppName">${name}</span></button>`;
+              alt="" @load=${event => { event.target.hidden = false; event.target.nextElementSibling.hidden = true; }} @error=${event => { event.target.hidden = true; event.target.nextElementSibling.hidden = false; }}>` : ''}<span class="deviceAppName" ?hidden=${!!app?.icon}>${name}</span></button>`;
         }
 
         // Return button HTML
         if(['CC1', 'CC2', 'CC3', 'AR1', 'AR2', 'AR3'].includes(config.defaultRemoteStyle_override) || (['apple-tv', 'chromecast'].includes(config.device_family) && !(config.defaultRemoteStyle_override))) {
           return html `
-            ${ Array.from(appLaunchButtons.keys()).map(key => {
-              var val = appLaunchButtons.get(key);
+            ${ appLaunchButtons.map(val => {
               if (val.startsWith('source:')) return sourceButton(val);
               if(val) {
                   return html `<button class="srcButton ${getAppButtonData(config, val, 'className')} ${getAppButtonData(config, val, 'active')} ${showHide(val)}" id="${val}-button" @click=${e.buttonDown}>
-                                 ${unsafeHTML(getAppButtonData(config, val, buttonStyle) || getAppButtonData(config, val, 'button'))}
+                                 ${renderLauncherFace(getAppButtonData(config, val, buttonStyle) || getAppButtonData(config, val, 'button'))}
                                </button>`;
               }
             })}
@@ -3870,11 +607,10 @@ class FiremoteCard extends LitElement {
         else {
           return html `
             <div class="${spanclass}">
-            ${ Array.from(appLaunchButtons.keys()).map(key => {
-              var val = appLaunchButtons.get(key);
+            ${ appLaunchButtons.map(val => {
               if (val.startsWith('source:')) return sourceButton(val);
               return html `<button class="srcButton ${getAppButtonData(config, val, 'className')} ${getAppButtonData(config, val, 'active')} ${showHide(val)}" id="${val}-button" @click=${e.buttonDown}>
-                             ${unsafeHTML(getAppButtonData(config, val, 'button'))}
+                             ${renderLauncherFace(getAppButtonData(config, val, 'button'))}
                            </button>`;
 
             })}
@@ -5778,16 +2514,8 @@ class FiremoteCard extends LitElement {
       }
 
       // conditionally hide the app launcher section if no apps are selected
-      var configuredAppLaunchButtons = 0;
-      for(let i=1; i<=appmap.size; i++) {
-        if(this._config["app_launch_"+i] && this._config["app_launch_"+i] != '') {
-            configuredAppLaunchButtons++;
-        }
-      }
-      var noAppsClass = '';
-      if (configuredAppLaunchButtons==0){
-        noAppsClass = 'noApps';
-      }
+      const hasApps = Object.entries(this._config).some(([key, value]) => /^app_launch_\d+$/.test(key) && value);
+      const noAppsClass = hasApps ? '' : 'noApps';
 
       // conditionally hide the button frame sections and their backgrounds
       var rowClass = "row";
@@ -5936,11 +2664,85 @@ class FiremoteCard extends LitElement {
 
 
 
+  static _directionButtons = {
+    'up-button': ['up', 103], 'left-button': ['left', 105],
+    'right-button': ['right', 106], 'down-button': ['down', 108],
+  };
+
+  _cancelButtonInteraction() {
+    this._buttonInteraction?.cancel();
+  }
+
+  _beginButtonInteraction(target, event) {
+    this._cancelButtonInteraction();
+    const owner = target.ownerDocument;
+    const view = owner.defaultView;
+    const listeners = [];
+    const intervals = new Set();
+    const releases = new Set();
+    let resolveAction;
+    let held = false;
+    let holdTimer;
+    const interaction = {
+      active: true,
+      action: new Promise(resolve => { resolveAction = resolve; }),
+      cancel: () => finish(null),
+      repeat: (callback, delay) => {
+        if (interaction.active) intervals.add(setInterval(callback, delay));
+      },
+      onRelease: callback => {
+        if (interaction.active) releases.add(callback);
+      },
+    };
+    const listen = (node, type, handler) => {
+      node.addEventListener(type, handler, true);
+      listeners.push(() => node.removeEventListener(type, handler, true));
+    };
+    const matchesPointer = released => event.pointerId === undefined ||
+      released.pointerId === undefined || released.pointerId === event.pointerId;
+    const finish = action => {
+      if (!interaction.active) return;
+      interaction.active = false;
+      clearTimeout(holdTimer);
+      for (const interval of intervals) clearInterval(interval);
+      for (const unlisten of listeners) unlisten();
+      if (this._buttonInteraction === interaction) this._buttonInteraction = undefined;
+      resolveAction(held ? null : action);
+      // Each raw key-down has exactly one matching key-up, even on cancellation.
+      for (const release of releases) release();
+      intervals.clear();
+      releases.clear();
+    };
+    const release = released => {
+      if (matchesPointer(released)) finish('click');
+    };
+    const cancel = cancelled => {
+      if (matchesPointer(cancelled)) finish(null);
+    };
+    listen(owner, 'pointerup', release);
+    listen(owner, 'mouseup', release);
+    listen(owner, 'pointercancel', cancel);
+    listen(target, 'lostpointercapture', cancel);
+    listen(view, 'blur', interaction.cancel);
+    listen(owner, 'visibilitychange', () => { if (owner.hidden) interaction.cancel(); });
+    listen(target, 'touchmove', interaction.cancel);
+    listen(target, 'mouseout', departed => {
+      if (!target.contains(departed.relatedTarget)) interaction.cancel();
+    });
+    holdTimer = setTimeout(() => {
+      if (!interaction.active) return;
+      held = true;
+      resolveAction('hold');
+    }, 500);
+    this._buttonInteraction = interaction;
+    return interaction;
+  }
+
   // Firemote Button Click or Click + Hold Handler
   buttonDown(clicked) {
 
     // Ignore right clicks
-    if (clicked.which === 3) {
+    if (clicked.which === 3 || clicked.button > 0 || (clicked.type === 'pointerdown' && clicked.isPrimary === false)) {
       return;
     }
 
@@ -5955,11 +2757,10 @@ class FiremoteCard extends LitElement {
     const atvRemoteEntity = this._config.android_tv_remote_entity;
     const rokuRemoteEntity = this._config.roku_remote_entity;
     const activityLight = this.renderRoot.querySelector('.activityLight');
-    const start = Date.now();
-    const holdTime = 500;
-    const buttonID = clicked.target.id;
-    var pressedTarget = clicked.target;
-    var timer = null;
+    const pressedTarget = clicked.currentTarget || clicked.target;
+    const buttonID = pressedTarget?.id;
+    if (!buttonID) return;
+    this._cancelButtonInteraction();
 
     // Reuse the catalog for this configuration, including inputs and custom launchers
     const appmap = getAppMap(this._config, true);
@@ -5971,57 +2772,31 @@ class FiremoteCard extends LitElement {
       return;
     }
 
-    // Check for user set Associated Android TV Remote Integration entity
-    var hasATVAssociation = true;
-    if(atvRemoteEntity == '' || typeof atvRemoteEntity == 'undefined' || deviceFamily == 'amazon-fire' ) {
-        hasATVAssociation = false;
-    }
-
-    // Choose event listener path for client android device
-    var eventListenerBinPath = '';
-    if(compatibility_mode == 'default' || compatibility_mode == 'strong' || compatibility_mode == '') {
-        eventListenerBinPath = deviceAttributeQuery("defaultEventListenerBinPath", this._config);
-    }
-    else {
-        var eventListenerBinPath = '/dev/input/'+compatibility_mode;
-    }
+    const hasATVAssociation = Boolean(atvRemoteEntity) && deviceFamily !== 'amazon-fire';
+    const eventListenerBinPath = ['default', 'strong'].includes(compatibility_mode)
+      ? deviceAttributeQuery('defaultEventListenerBinPath', _config)
+      : '/dev/input/' + compatibility_mode;
 
     // Function to handle translations from English to the user's language
     const ha_language = this.hass.config.language;
     function translateToUsrLang(englishString) {
         var translatedString = englishString;
         if (typeof translationmap.get(ha_language) !== 'undefined'){
-            if (typeof translationmap.get(ha_language)[sourceName] !== 'undefined'){
+            if (typeof translationmap.get(ha_language)[englishString] !== 'undefined'){
                 translatedString = translationmap.get(ha_language)[englishString];
             }
         }
         return translatedString;
     }
 
-    // Function: Assemble arguments for service calls
+    // Keep service arguments separate from the configuration owned by Home Assistant.
     function getCustomServiceArgs(def) {
-        if((typeof def.action !== 'undefined' || typeof def.service !== 'undefined') && typeof def.target !== 'undefined') {
-            var svcarray;
-            if(typeof def.action !== 'undefined') {
-              svcarray = def.action.split(".");
-            }
-            else {
-              svcarray = def.service.split(".");
-            }
-            var data = Object;
-            if(typeof def.data !== 'undefined') {
-              var extraData = JSON.parse(JSON.stringify(def.data));
-              var target = JSON.parse(JSON.stringify(def.target));
-              data = Object.assign(target, extraData);
-            }
-            else {
-              data = Object.assign(def.target);
-            }
-            return new Array(svcarray[0], svcarray[1], data);
-        }
-    };
-
-
+      const service = def.action ?? def.service;
+      if (typeof service !== 'string' || !def.target || typeof def.target !== 'object') return;
+      const [domain, action, extra] = service.split('.');
+      if (!domain || !action || extra !== undefined) return;
+      return [domain, action, { ...def.target, ...def.data }];
+    }
 
     // Check for and handle button overrides before proceeding
     // No HOLD actions for button overrides are supported
@@ -6039,7 +2814,8 @@ class FiremoteCard extends LitElement {
               else if((typeof overrideDef.service !== 'undefined' || typeof overrideDef.action !== 'undefined') && typeof overrideDef.target !== 'undefined') {
                 // handle overrides via yaml instructions
                 var ServiceDetails = getCustomServiceArgs(overrideDef);
-                try{ _hass.callService(ServiceDetails[0], ServiceDetails[1], ServiceDetails[2]) }
+                if (!ServiceDetails) return;
+                try{ _hass.callService(...ServiceDetails) }
                 catch { return; }
                 fireEvent(this, 'haptic', 'light'); // haptic feedback on success
                 return;
@@ -6051,33 +2827,21 @@ class FiremoteCard extends LitElement {
 
     // Handle custom launcher button clicks
     // No HOLD actions for custom launchers are supported
-    var customLauncherIDPfx = new RegExp('customlauncher ')
-    if(customLauncherIDPfx.test(buttonID)){
-        var clickedButtonID = buttonID;
-        const customLauncherKey = clickedButtonID.substr(0, clickedButtonID.indexOf("-button"));
-        if(appmap.has(customLauncherKey)) {
-            if(appmap.get(customLauncherKey).script) {
-                try{ _hass.callService("script", appmap.get(customLauncherKey).script, appmap.get(customLauncherKey).data) }
-                catch { return; }
-                fireEvent(this, 'haptic', 'light');
-                return;
-            }
-            else {
-               var launcher = appmap.get(customLauncherKey);
-               if(typeof launcher.friendlyName !== 'undefined') {
-                 _config.custom_launchers.forEach(element => {
-                   var name = launcher.friendlyName.substr(8);
-                   if (name == element.friendly_name) {
-                     var ServiceDetails = getCustomServiceArgs(element);
-                     try{ _hass.callService(ServiceDetails[0], ServiceDetails[1], ServiceDetails[2]) }
-                     catch { return; }
-                     fireEvent(this, 'haptic', 'light');
-                   }
-                 });
-                 return;
-               }
-            }
-        }
+    if (buttonID.startsWith('customlauncher ')) {
+      const customLauncherKey = buttonID.replace(/-button$/, '');
+      const configured = _config.custom_launchers;
+      const launchers = Array.isArray(configured) ? configured : [configured];
+      const launcher = launchers.find((definition, index) => definition &&
+        customLauncherKey === 'customlauncher ' + (definition.friendly_name || definition.label || 'customlauncher ' + (index + 1)));
+      if (!launcher) return;
+      const details = launcher.script
+        ? ['script', launcher.script, launcher.data]
+        : getCustomServiceArgs(launcher);
+      if (!details) return;
+      try { _hass.callService(...details); }
+      catch { return; }
+      fireEvent(this, 'haptic', 'light');
+      return;
     }
 
 
@@ -6137,61 +2901,14 @@ class FiremoteCard extends LitElement {
 
     // detect difference between click or hold actions
     // then carry out the appropriate actions
-    const userAction = getActionType(this);
+    const interaction = this._beginButtonInteraction(pressedTarget, clicked);
+    return getActionType(this);
     async function getActionType(that) {
-      let type = new Promise((resolve, reject) => {
-
-        pressedTarget.addEventListener("mouseup", release, true);
-        pressedTarget.addEventListener("pointerup", release, true);
-        pressedTarget.addEventListener("mouseout", mouseOutHandler, true);
-        pressedTarget.addEventListener('touchmove', handleTouchMove, {passive: true});
-        timer = setTimeout(function(){
-          if(start){
-            // it was a hold
-            pressedTarget.removeEventListener("mouseup", release, true);
-            pressedTarget.removeEventListener("pointerup", release, true);
-            pressedTarget.removeEventListener("mouseout", mouseOutHandler, true);
-            pressedTarget.removeEventListener('touchmove', handleTouchMove, {passive: true});
-            resolve("hold");
-          }
-        }, holdTime);
-      
-        // it was a click
-        function release(){
-          clearTimeout(timer);
-          let start = null;
-          pressedTarget.removeEventListener("mouseup", release, true);
-          pressedTarget.removeEventListener("pointerup", release, true);
-          pressedTarget.removeEventListener("mouseout", mouseOutHandler, true);
-          pressedTarget.removeEventListener('touchmove', handleTouchMove, {passive: true});
-          resolve("click");
-        }
-  
-        // a non-event is cancelled here
-        function mouseOutHandler() {
-          clearTimeout(timer);
-          let start = null;
-          pressedTarget.removeEventListener("mouseup", release, true);
-          pressedTarget.removeEventListener("pointerup", release, true);
-          pressedTarget.removeEventListener("mouseout", mouseOutHandler, true);
-          pressedTarget.removeEventListener('touchmove', handleTouchMove, {passive: true});
-          resolve(null);
-        }
-        function handleTouchMove() {
-          clearTimeout(timer);
-          let start = null;
-          pressedTarget.removeEventListener("mouseup", release, true);
-          pressedTarget.removeEventListener("pointerup", release, true);
-          pressedTarget.removeEventListener("mouseout", mouseOutHandler, true);
-          pressedTarget.removeEventListener('touchmove', handleTouchMove, {passive: true});
-          resolve(null);
-        }
-      });
-
       // After determining the button interaction type,
       // send the appropriate commands
-      let actionType = await type;
-      if (actionType === null) {return;}
+      const actionType = await interaction.action;
+      if (actionType === null || that._config !== _config || !that.isConnected ||
+          (actionType === 'hold' && !interaction.active)) return;
       if(actionType == 'click' || actionType == 'hold') {
 
         // Flash activity light if it exists
@@ -6327,316 +3044,40 @@ class FiremoteCard extends LitElement {
 
 
 
-        // Up Button click
-        if(buttonID == 'up-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            var t = deviceFamily+"_remote_entity";
-            var confname = t.replace(/\-/, "_");
-            _hass.callService("remote", "send_command", { entity_id: _config[confname], command: 'up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_UP' });
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'UP' });
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 103 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 103 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Up Button hold
-        if(buttonID == 'up-button' && actionType == 'hold') {
-          if(['apple-tv'].includes(deviceFamily)) {
-            // needs to be at least 1sec hold time for Apple TV
-            _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'up', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'up', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-                  }, 1025);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(['roku'].includes(deviceFamily)) {
-            // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 1/4 sec repeat is an ok substitute for now
-            _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_UP', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_UP', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-                  }, 525);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'UP' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'UP' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else {
-            clicked.target.addEventListener("pointerup", rls, true);
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 103 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
-              _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 103 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
+        // Directional controls share transport selection, timings, and release cleanup.
+        const direction = FiremoteCard._directionButtons[buttonID];
+        if (direction) {
+          const [name, keycode] = direction;
+          if (['apple-tv', 'roku'].includes(deviceFamily)) {
+            const appleTV = deviceFamily === 'apple-tv';
+            const data = {
+              entity_id: appleTV ? _config.apple_tv_remote_entity : rokuRemoteEntity,
+              command: name, num_repeats: 1, delay_secs: 0,
+              hold_secs: actionType === 'hold' && appleTV ? 1 : 0,
+            };
+            const send = () => _hass.callService('remote', 'send_command', data);
+            send();
+            if (actionType === 'hold') interaction.repeat(send, appleTV ? 1025 : 250);
+          } else if (hasATVAssociation) {
+            const data = { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_' + name.toUpperCase() };
+            if (actionType === 'hold') Object.assign(data, { num_repeats: 1, delay_secs: 0, hold_secs: 0.5 });
+            const send = () => _hass.callService('remote', 'send_command', data);
+            send();
+            if (actionType === 'hold') interaction.repeat(send, 525);
+          } else if (compatibility_mode === 'strong' || eventListenerBinPath === 'undefined') {
+            const send = () => _hass.callService('androidtv', 'adb_command', { entity_id: entity, command: name.toUpperCase() });
+            send();
+            if (actionType === 'hold') interaction.repeat(send, 250);
+          } else {
+            const press = 'sendevent ' + eventListenerBinPath + ' 1 ' + keycode + ' 1 && sendevent ' + eventListenerBinPath + ' 0 0 0';
+            const release = 'sendevent ' + eventListenerBinPath + ' 1 ' + keycode + ' 0 && sendevent ' + eventListenerBinPath + ' 0 0 0';
+            _hass.callService('androidtv', 'adb_command', { entity_id: entity, command: actionType === 'click' ? press + ' && ' + release : press });
+            if (actionType === 'hold') interaction.onRelease(() => {
+              _hass.callService('androidtv', 'adb_command', { entity_id: entity, command: release + ' ' });
+            });
           }
           return;
         }
-        
-
-
-        // Left Button Click
-        if(buttonID == 'left-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            var t = deviceFamily+"_remote_entity";
-            var confname = t.replace(/\-/, "_");
-            _hass.callService("remote", "send_command", { entity_id: _config[confname], command: 'left', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_LEFT' });
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'LEFT' });
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 105 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 105 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Left Button Hold
-        if(buttonID == 'left-button' && actionType == 'hold') {
-          if(['apple-tv'].includes(deviceFamily)) {
-            // needs to be at least 1sec hold time for Apple TV
-            _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'left', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'left', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-                  }, 1025);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(['roku'].includes(deviceFamily)) {
-            // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 1/4 sec repeat is an ok substitute for now
-            _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'left', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'left', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_LEFT', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_LEFT', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-                  }, 525);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'LEFT' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'LEFT' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else {
-            clicked.target.addEventListener("pointerup", rls, true);
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 105 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
-              _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 105 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
-          }
-          return;
-        }
-
-
-
-        // Right Button Click
-        if(buttonID == 'right-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            var t = deviceFamily+"_remote_entity";
-            var confname = t.replace(/\-/, "_");
-            _hass.callService("remote", "send_command", { entity_id: _config[confname], command: 'right', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_RIGHT' });
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'RIGHT' });
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 106 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 106 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Right Button Hold
-        if(buttonID == 'right-button' && actionType == 'hold') {
-          if(['apple-tv'].includes(deviceFamily)) {
-            // needs to be at least 1sec hold time for Apple TV
-            _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'right', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'right', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-                  }, 1025);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(['roku'].includes(deviceFamily)) {
-            // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 1/4 sec repeat is an ok substitute for now
-            _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'right', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'right', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_RIGHT', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_RIGHT', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-                  }, 525);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'RIGHT' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'RIGHT' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else {
-            clicked.target.addEventListener("pointerup", rls, true);
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 106 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
-              _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 106 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
-          }
-          return;
-        }
-
-
-
-        // Down Button Click
-        if(buttonID == 'down-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            var t = deviceFamily+"_remote_entity";
-            var confname = t.replace(/\-/, "_");
-            _hass.callService("remote", "send_command", { entity_id: _config[confname], command: 'down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_DOWN' });
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'DOWN' });
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 108 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 108 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Down Button Hold
-        if(buttonID == 'down-button' && actionType == 'hold') {
-          if(['apple-tv'].includes(deviceFamily)) {
-            // needs to be at least 1sec hold time for Apple TV
-            _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'down', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'down', num_repeats: 1, delay_secs: 0, hold_secs: 1});
-                  }, 1025);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(['roku'].includes(deviceFamily)) {
-            // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 1/4 sec repeat is an ok substitute for now
-            _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-            return;
-          }
-          if(hasATVAssociation) {
-            _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_DOWN', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_DPAD_DOWN', num_repeats: 1, delay_secs: 0, hold_secs: 0.5});
-                  }, 525);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'DOWN' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
-                    _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'DOWN' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
-          }
-          else {
-            clicked.target.addEventListener("pointerup", rls, true);
-            _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 108 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
-              _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 108 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
-          }
-          return;
-        }
-
 
 
         // Center Button Click
@@ -6683,38 +3124,28 @@ class FiremoteCard extends LitElement {
             // This adb shell input keyevent --longpress 23 strategy does not seem to work with the NVIDIA Shield, onn. or Chromecast through ADB
             // need to rapidfire the center button like we do the other dpad buttons
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'adb shell input keyevent 23' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'adb shell input keyevent 23' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
           }
           else {
             if(deviceType == 'fire_tv_4_series' || deviceType == 'fire_tv_toshiba_v35' || deviceType == 'fire_tv_jvc-4k-2021') {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 28 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 28 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             else if(deviceType == 'mi-box-s') {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 353 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 353 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             else {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 96 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 96 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
           }
           return;
@@ -6738,13 +3169,9 @@ class FiremoteCard extends LitElement {
           if(['roku'].includes(deviceFamily)) {
             // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 1/4 sec repeat is an ok substitute for now
             _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'replay', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'replay', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           return;
@@ -6930,42 +3357,28 @@ class FiremoteCard extends LitElement {
           if(['roku'].includes(deviceFamily)) {
             // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 0.15 sec repeat is an ok-ish substitute for now
             _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'reverse', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'reverse', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 150);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 150);
             return;
           }
           if(hasATVAssociation) {
             _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_MEDIA_REWIND', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_MEDIA_REWIND', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 100);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 100);
           }
           else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'REWIND' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'REWIND' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
           }
           else {
-            clicked.target.addEventListener("pointerup", rls, true);
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 168 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
+            interaction.onRelease(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 168 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
+            });
           }
           return;
         }
@@ -7039,51 +3452,35 @@ class FiremoteCard extends LitElement {
           if(['roku'].includes(deviceFamily)) {
             // hold does not work with Roku - https://github.com/home-assistant/core/issues/123999 - using a 0.15 sec repeat is an ok-ish substitute for now
             _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'forward', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'forward', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 150);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 150);
             return;
           }
           if(hasATVAssociation) {
             _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_MEDIA_FAST_FORWARD', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("remote", "send_command", { entity_id: atvRemoteEntity, command: 'KEYCODE_MEDIA_FAST_FORWARD', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 100);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 100);
           }
           else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'FAST_FORWARD' });
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
                     _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'FAST_FORWARD' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
           }
           else {
             if(deviceType == 'fire_tv_4_series' || deviceType == 'fire_tv_toshiba_v35' || deviceType == 'fire_tv_jvc-4k-2021') {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 159 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 159 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             else {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 208 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 208 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             return;
           }
@@ -7116,62 +3513,40 @@ class FiremoteCard extends LitElement {
         // Volume Up Button Hold
         if(buttonID == 'volume-up-button' && actionType == 'hold') {
           if(['apple-tv'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'volume_up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           if(['roku'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'volume_up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           if(hasATVAssociation) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.android_tv_remote_entity, command: 'KEYCODE_VOLUME_UP' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else if(deviceFamily == 'nvidia-shield') {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell cmd media_session volume --show --adj raise' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'VOLUME_UP' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else {
-            clicked.target.addEventListener("pointerup", rls, true);
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 115 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
+            interaction.onRelease(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 115 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
+            });
           }
           return;
         }
@@ -7203,62 +3578,40 @@ class FiremoteCard extends LitElement {
         // Volume Down Button Hold
         if(buttonID == 'volume-down-button' && actionType == 'hold') {
           if(['apple-tv'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.apple_tv_remote_entity, command: 'volume_down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           if(['roku'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'volume_down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           if(hasATVAssociation) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.android_tv_remote_entity, command: 'KEYCODE_VOLUME_DOWN' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else if(deviceFamily == 'nvidia-shield') {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell cmd media_session volume --show --adj lower' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else if(compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'VOLUME_DOWN' });
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else {
-            clicked.target.addEventListener("pointerup", rls, true);
             _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 114 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-            function rls() {
-              clicked.target.removeEventListener("pointerup", rls, true);
+            interaction.onRelease(() => {
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 114 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-            }
+            });
           }
           return;
         }
@@ -7327,33 +3680,23 @@ class FiremoteCard extends LitElement {
             return;
           }
           if(['roku'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'channel_up', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else {
             if (['fire_tv_stick_4k_second_gen', 'fire_tv_stick_4k_max_second_gen'].includes(deviceType)) {
-              clicked.target.addEventListener("pointerup", rls, true);
-              let rpt = setInterval( function() {
+              interaction.repeat(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent KEYCODE_CHANNEL_UP'});
-                    }, 250);
-              function rls() {
-                clearInterval(rpt);
-              }
+              }, 250);
               return;
             }
             else {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 402 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 402 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             return;
           }
@@ -7391,33 +3734,23 @@ class FiremoteCard extends LitElement {
             return;
           }
           if(['roku'].includes(deviceFamily)) {
-            clicked.target.addEventListener("pointerup", rls, true);
-            let rpt = setInterval( function() {
+            interaction.repeat(() => {
               _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: 'channel_down', num_repeats: 1, delay_secs: 0, hold_secs: 0});
-                  }, 250);
-            function rls() {
-              clearInterval(rpt);
-            }
+            }, 250);
             return;
           }
           else {
             if (['fire_tv_stick_4k_second_gen', 'fire_tv_stick_4k_max_second_gen'].includes(deviceType)) {
-              clicked.target.addEventListener("pointerup", rls, true);
-              let rpt = setInterval( function() {
+              interaction.repeat(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent KEYCODE_CHANNEL_DOWN'});
-                    }, 250);
-              function rls() {
-                clearInterval(rpt);
-              }
+              }, 250);
               return;
             }
             else {
-              clicked.target.addEventListener("pointerup", rls, true);
               _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 403 1 && sendevent '+eventListenerBinPath+' 0 0 0' });
-              function rls() {
-                clicked.target.removeEventListener("pointerup", rls, true);
+              interaction.onRelease(() => {
                 _hass.callService("androidtv", "adb_command", { entity_id: entity, command: 'sendevent '+eventListenerBinPath+' 1 403 0 && sendevent '+eventListenerBinPath+' 0 0 0 '});
-              }
+              });
             }
             return;
           }
@@ -7628,262 +3961,22 @@ class FiremoteCard extends LitElement {
         }
 
 
-        // Numeric 1 Button Click
-        if(buttonID == 'num1-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
+        // Android keycodes are 7..16 for digits 0..9; Linux input codes are 11,2..10.
+        const numericButton = /^num([0-9])-button$/.exec(buttonID);
+        if (numericButton) {
+          if (actionType === 'hold') return;
+          if (['apple-tv', 'roku'].includes(deviceFamily)) {
             unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 8'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 2 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 2 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 1 Button Hold
-        if(buttonID == 'num1-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 2 Button Click
-        if(buttonID == 'num2-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 9'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 3 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 3 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
+          } else {
+            const digit = Number(numericButton[1]);
+            const code = digit === 0 ? 11 : digit + 1;
+            const command = compatibility_mode === 'strong' || eventListenerBinPath === 'undefined'
+              ? 'adb shell input keyevent ' + (digit + 7)
+              : 'sendevent ' + eventListenerBinPath + ' 1 ' + code + ' 1 && sendevent ' + eventListenerBinPath + ' 0 0 0 && sendevent ' + eventListenerBinPath + ' 1 ' + code + ' 0 && sendevent ' + eventListenerBinPath + ' 0 0 0';
+            _hass.callService('androidtv', 'adb_command', { entity_id: entity, command });
           }
           return;
         }
-        // Numeric 2 Button Hold
-        if(buttonID == 'num2-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 3 Button Click
-        if(buttonID == 'num3-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 10'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 4 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 4 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 3 Button Hold
-        if(buttonID == 'num3-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 4 Button Click
-        if(buttonID == 'num4-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 11'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 5 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 5 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 4 Button Hold
-        if(buttonID == 'num4-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 5 Button Click
-        if(buttonID == 'num5-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 12'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 6 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 6 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 5 Button Hold
-        if(buttonID == 'num5-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 6 Button Click
-        if(buttonID == 'num6-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 13'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 7 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 7 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 6 Button Hold
-        if(buttonID == 'num6-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 7 Button Click
-        if(buttonID == 'num7-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 14'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 8 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 8 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 7 Button Hold
-        if(buttonID == 'num7-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 8 Button Click
-        if(buttonID == 'num8-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 15'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 9 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 9 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 8 Button Hold
-        if(buttonID == 'num8-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 9 Button Click
-        if(buttonID == 'num9-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 16'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 10 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 10 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 9 Button Hold
-        if(buttonID == 'num9-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // Numeric 0 Button Click
-        if(buttonID == 'num0-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 7'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 11 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 11 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // Numeric 0 Button Hold
-        if(buttonID == 'num0-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // SUBT Button Click
-        if(buttonID == 'subtitle-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else if (compatibility_mode == 'strong' || eventListenerBinPath == 'undefined') {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent 175'});
-          }
-          else {
-            _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+eventListenerBinPath+' 1 469 1 && sendevent '+eventListenerBinPath+' 0 0 0 && sendevent '+eventListenerBinPath+' 1 469 0 && sendevent '+eventListenerBinPath+' 0 0 0' });
-          }
-          return;
-        }
-        // SUBT Button Hold
-        if(buttonID == 'subtitle-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
-
-
-        // LIVE Button Click
-        if(buttonID == 'live-button' && actionType == 'click') {
-          if(['apple-tv', 'roku'].includes(deviceFamily)) {
-            unsupportedButton();
-          }
-          else {
-            if(deviceType == 'fire_tv_jvc-4k-2021') {
-              var tempbinpath = '/dev/input/event4'
-              _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'sendevent '+tempbinpath+' 1 358 1 && sendevent '+tempbinpath+' 0 0 0 && sendevent '+tempbinpath+' 1 358 0 && sendevent '+tempbinpath+' 0 0 0' });
-            }
-            else if (['fire_tv_4_series', 'fire_tv_toshiba_v35"'].includes(deviceType)) {
-               _hass.callService("androidtv", "adb_command", { entity_id: _config.entity, command: 'adb shell input keyevent KEYCODE_TV'});
-            }
-            else {
-              unsupportedButton();
-            }
-          }
-          return;
-        }
-        // LIVE Button Hold
-        if(buttonID == 'live-button' && actionType == 'hold') {
-          // no special behaviors known for this
-          return;
-        }
-
 
 
         // Red Button Click
@@ -8063,29 +4156,6 @@ class FiremoteCard extends LitElement {
         }
 
 
-// TODO: Not important, but also not working with the refactor
-//        // Roku Function: Secret Screen Click
-//        if(buttonID == 'roku-secret-screen-button' && actionType == 'click') {
-//          if(['roku'].includes(deviceFamily)) {
-//            var command = ['home', 'home', 'home', 'home', 'home', 'forward', 'forward', 'forward', 'reverse', 'reverse'];
-//            for (let index = 0, len = command.length; index < len; ++index) {
-//              setTimeout(() =>
-//                _hass.callService("remote", "send_command", { entity_id: _config.roku_remote_entity, command: command[index], num_repeats: 1, delay_secs: 0, hold_secs: 0}),
-//                index*50);
-//            }
-//          }
-//          else {
-//            unsupportedButton();
-//          }
-//          return;
-//        }
-//        // Roku Function: Secret Screen Hold
-//        if(buttonID == 'roku-secret-screen-button' && actionType == 'hold') {
-//          // no special actions imagined for this yet
-//          return;
-//        }
-
-
       // uncaught button presses land here
       //console.log('unhandled '+actionType+' action for '+buttonID);
       return;
@@ -8123,8 +4193,8 @@ class FiremoteCardEditor extends LitElement {
 
   static get styles() {
     return css`
-      .remoteStyleMenu { width: 100%; max-width: 26rem; }
-      .remoteStyleMenu summary {
+      .editorDropdown { width: 100%; max-width: 26rem; }
+      .editorDropdown summary {
         box-sizing: border-box;
         padding: .6em;
         border: 1px solid var(--divider-color, #777);
@@ -8134,17 +4204,17 @@ class FiremoteCardEditor extends LitElement {
         cursor: pointer;
         overflow-wrap: anywhere;
       }
-      .remoteStyleMenu select {
+      .editorDropdown select {
         display: block;
         box-sizing: border-box;
         width: 100%;
-        height: min(16rem, 40vh);
+        max-height: min(16rem, 40vh);
         margin-top: 4px;
         font: inherit;
         background: var(--card-background-color, #fff);
         color: var(--primary-text-color, #111);
       }
-      .remoteStyleMenu option { padding: .5em .75em; }
+      .editorDropdown option { padding: .5em .75em; }
     `;
   }
 
@@ -8162,8 +4232,11 @@ class FiremoteCardEditor extends LitElement {
     if (previous.config?.language !== this.hass.config?.language ||
         previous.entities !== this.hass.entities) return true;
     if (appCatalogState(previous, this._config) !== appCatalogState(this.hass, this._config)) return true;
-    if (JSON.stringify(previous.states[this._config?.entity]?.attributes.source_list) !==
-        JSON.stringify(this.hass.states[this._config?.entity]?.attributes.source_list)) return true;
+    const previousSources = previous.states[this._config?.entity]?.attributes.source_list;
+    const sources = this.hass.states[this._config?.entity]?.attributes.source_list;
+    if (previousSources !== sources &&
+        (!Array.isArray(previousSources) || !Array.isArray(sources) ||
+         previousSources.length !== sources.length || previousSources.some((source, index) => source !== sources[index]))) return true;
     // Dropdowns need entity membership and friendly names, not playback state.
     this._indexEntities();
     return this._dropdownEntities.some(id =>
@@ -8171,9 +4244,24 @@ class FiremoteCardEditor extends LitElement {
        previous.states[id]?.attributes.friendly_name !== this.hass.states[id]?.attributes.friendly_name));
   }
 
+  _normalizeConfig(config) {
+    const normalized = { ...config };
+    normalized.device_family ||= devicemap.keys().next().value;
+    if (normalized.device_family === 'none') {
+      normalized.device_type = 'other';
+      normalized.entity = 'none';
+      delete normalized.apple_tv_remote_entity;
+      delete normalized.android_tv_remote_entity;
+      delete normalized.roku_remote_entity;
+    }
+    if (normalized.defaultRemoteStyle_override === 'AL2') {
+      normalized.app_launcher_relative_size ??= 0;
+    }
+    return normalized;
+  }
+
   setConfig(config) {
-    // Rendering must not mutate the config object owned by Home Assistant.
-    this._config = { ...config };
+    this._config = this._normalizeConfig(config);
   }
 
   configChanged(ev) {
@@ -8182,16 +4270,10 @@ class FiremoteCardEditor extends LitElement {
     if (!key) return;
     const value = target.type === 'checkbox' ? target.checked : target.value;
     if (this._config[key] === value) return;
-    const config = { ...this._config, [key]: value };
-    delete config.app_catalog_entity;
-    if (key === 'device_family') {
-      config.device_type = value === 'none' ? 'other' : null;
-      if (value === 'none') {
-        config.entity = 'none';
-        delete config.apple_tv_remote_entity;
-        delete config.android_tv_remote_entity;
-      }
-    }
+    const next = { ...this._config, [key]: value };
+    delete next.app_catalog_entity;
+    if (key === 'device_family') next.device_type = null;
+    const config = this._normalizeConfig(next);
     this._config = config;
     this.dispatchEvent(new CustomEvent('config-changed', {
       detail: { config }, bubbles: true, composed: true,
@@ -8199,31 +4281,7 @@ class FiremoteCardEditor extends LitElement {
   }
 
   translateToUsrLang(englishString) {
-    const ha_language = this.hass.config.language;
-    var translatedString = englishString;
-    if (typeof translationmap.get(ha_language) !== 'undefined'){
-        if (typeof translationmap.get(ha_language)[englishString] !== 'undefined'){
-            translatedString = translationmap.get(ha_language)[englishString];
-        }
-    }
-    return translatedString;
-  }
-
-  removeMatching(originalArray, regex) {
-    var j = 0;
-    while (j < originalArray.length) {
-        if (regex.test(originalArray[j]))
-            originalArray.splice(j, 1);
-        else
-            j++;
-    }
-    return originalArray;
-  }
-
-  getEntitiesByType(type) {
-    return Object.keys(this.hass.states).filter(
-      (eid) => eid.substr(0, eid.indexOf('.')) === type
-    );
+    return translationmap.get(this.hass.config?.language)?.[englishString] ?? englishString;
   }
 
   _indexEntities() {
@@ -8253,226 +4311,102 @@ class FiremoteCardEditor extends LitElement {
       .filter(id => id.startsWith('remote.') && !/Supports/i.test(id));
   }
 
-  getDeviceFamiliesDropdown(optionvalue){
-    var familykeys = [];
-    for(var [key, value] of devicemap.entries()) {
-      familykeys.push(key)
-    }
-    return html `
-      <select name="device_family" id="device_family" style="padding: .6em; font-size: 1em;"
-          .value=${optionvalue}
-          @focusout=${this.configChanged}
-          @change=${this.configChanged}
-      >
-        ${familykeys.map((family) => {
-          var familyTranslatedName = this.translateToUsrLang(devicemap.get(family).meta.friendlyName);
-          if(devicemap.get(family).meta.supported) {
-            if (family == optionvalue) {
-              return html`<option value="${family}" selected>${familyTranslatedName}</option> `
-            }
-            else {
-              return html`<option value="${family}">${familyTranslatedName}</option> `
-            }
-          }
-          else {
-            return html`<option value="${family}" disabled>${familyTranslatedName}</option>`
-          }
-        })}
-      </select>
-      <br>
-    `;
-  }
-
-
-
-  getMediaPlayerEntityDropdown(optionValue){
-    if(['none'].includes(this._config.device_family)) { 
-      this._config.entity = 'none';
-      this.configChanged;
-      return;
-    }
-    var mediaPlayerEntities = [];
-    var heading = '';
-    if(this._config.device_family == 'apple-tv') {
-      mediaPlayerEntities = this.getMediaPlayerEntitiesByPlatform('apple_tv');
-      heading = 'Apple TV Media Player '+ this.translateToUsrLang('Entity');
-      heading = this.hass.config.language == 'he' || this.hass.config.language == 'fr' ? 
-        this.translateToUsrLang('Entity') + ' Apple TV Media Player' : 'Apple TV Media Player '+ this.translateToUsrLang('Entity');
-    }
-    else if(this._config.device_family == 'roku') {
-      mediaPlayerEntities = this.getMediaPlayerEntitiesByPlatform('roku');
-      heading = this.hass.config.language == 'he' || this.hass.config.language == 'fr' ?
-        this.translateToUsrLang('Entity') + ' Roku Media Player' : 'Roku Media Player '+ this.translateToUsrLang('Entity');
-    }
-    else {
-      mediaPlayerEntities = this.getMediaPlayerEntitiesByPlatform('androidtv');
-      heading = this.hass.config.language == 'he' || this.hass.config.language == 'fr' ? 
-        this.translateToUsrLang('Entity') + ' Android Debug Bridge' : 'Android Debug Bridge '+ this.translateToUsrLang('Entity');
-    }
-    var blankEntity = '';
-    if(this._config.entity == '' || !(mediaPlayerEntities).includes(optionValue)) {
-      blankEntity = html `<option value="" selected> - - - - </option> `;
-    }
+  _renderDropdown(name, label, options, saved) {
+    const choices = options.flatMap(option => option.options || [option]);
+    const value = choices.some(option => option.value === saved) ? saved : choices[0]?.value || '';
+    const selected = choices.find(option => option.value === value);
+    const close = menu => {
+      menu.open = false;
+      menu.querySelector('summary').focus();
+    };
+    const renderOption = option => html`<option value=${option.value}
+      ?selected=${option.value === value} ?disabled=${option.disabled}>${option.label}</option>`;
+    // A size > 1 keeps the list in the editor's scroll flow instead of opening
+    // a browser popup, whose height cannot be constrained to the HA dialog.
     return html`
-        ${heading}:<br>
-        <select name="entity" id="entity" style="padding: .6em; font-size: 1em;" .value="${optionValue}"
-            @focusout=${this.configChanged}
-            @change=${this.configChanged} >
-            ${blankEntity}
-            ${mediaPlayerEntities.map((eid) => {
-              if (eid != this._config.entity) {
-                return html`<option value="${eid}">${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-              }
-              else {
-                return html`<option value="${eid}" selected>${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-              }
-            })}
-        </select>
-        <br>
-        <br>`
-  }
-
-
-  getAssociatedRemoteEntityDropdown(optionValue){
-    if(['amazon-fire', 'none'].includes(this._config.device_family)) { return; }
-    var blankRemoteEntity = '';
-    var remoteEntities = [];
-    var appleTVRemoteEntities = this.getRemoteEntitiesByPlatform('apple_tv');
-    if(this._config.device_family == 'apple-tv') {
-        var dropdownLabel = this.translateToUsrLang('Associated') + ' Apple TV Remote ' + this.translateToUsrLang('Entity');
-        dropdownLabel = this.hass.config.language == 'he' ?  'ישות משויכת ל-' + 'Apple TV Remote ' : dropdownLabel;
-        if(this._config.apple_tv_remote_entity == '' || typeof this._config.apple_tv_remote_entity == 'undefined') {
-            blankRemoteEntity = html `<option value="" selected> - - - - </option> `;
-        }
-        remoteEntities = this.getRemoteEntitiesByPlatform('apple_tv');
-        return html`
-              ${dropdownLabel}:<br>
-              <select name="apple_tv_remote_entity" id="apple_tv_remote_entity" style="padding: .6em; font-size: 1em;" .value=${optionValue}
-                @focusout=${this.configChanged}
-                @change=${this.configChanged} >
-                ${blankRemoteEntity}
-                ${remoteEntities.map((eid) => {
-                  if (eid != this._config.apple_tv_remote_entity) {
-                    return html`<option value="${eid}">${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                  else {
-                    return html`<option value="${eid}" selected>${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                })}
-              </select>
-            <br>
-            <br>`
-    }
-    if(this._config.device_family == 'roku') {
-        var dropdownLabel = this.translateToUsrLang('Associated') + ' Roku Remote ' + this.translateToUsrLang('Entity');
-        dropdownLabel = this.hass.config.language == 'he' ?  'ישות משויכת ל-' + 'Roku Remote ' : dropdownLabel;
-        if(this._config.roku_remote_entity == '' || typeof this._config.roku_remote_entity == 'undefined') {
-            blankRemoteEntity = html `<option value="" selected> - - - - </option> `;
-        }
-        remoteEntities = this.getRemoteEntitiesByPlatform('roku');
-        return html`
-              ${dropdownLabel}:<br>
-              <select name="roku_remote_entity" id="roku_remote_entity" style="padding: .6em; font-size: 1em;" .value=${optionValue}
-                @focusout=${this.configChanged}
-                @change=${this.configChanged} >
-                ${blankRemoteEntity}
-                ${remoteEntities.map((eid) => {
-                  if (eid != this._config.roku_remote_entity) {
-                    return html`<option value="${eid}">${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                  else {
-                    return html`<option value="${eid}" selected>${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                })}
-              </select>
-            <br>
-            <br>`
-    }
-    else {
-        var dropdownLabel = this.translateToUsrLang('Associated') + ' Android TV Remote ' + this.translateToUsrLang('Entity') + ': (' + this.translateToUsrLang('optional') + ')';
-        dropdownLabel = this.hass.config.language == 'he' ?  'ישות משויכת ל-' + 'Android TV Remote ' : dropdownLabel;
-        dropdownLabel = this.hass.config.language == 'fr' ?  'Entité Android TV Remote Associé (optionnel)' : dropdownLabel;
-        if(this._config.androidTVRemoteEntity == '' || typeof this._config.androidTVRemoteEntity == 'undefined') {
-            blankRemoteEntity = html `<option value="" selected> - - - - </option> `;
-        }
-        remoteEntities = this.getRemoteEntitiesByPlatform('androidtv_remote');
-        return html`
-              ${dropdownLabel}<br>
-              <select name="android_tv_remote_entity" id="android_tv_remote_entity" style="padding: .6em; font-size: 1em;" .value=${optionValue}
-                @focusout=${this.configChanged}
-                @change=${this.configChanged} >
-                ${blankRemoteEntity}
-                ${remoteEntities.map((eid) => {
-                  if (eid != this._config.android_tv_remote_entity) {
-                    return html`<option value="${eid}">${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                  else {
-                    return html`<option value="${eid}" selected>${this.hass.states[eid].attributes.friendly_name || eid}</option> `;
-                  }
-                })}
-              </select>
-            <br>
-            <br>`
-    }
-  }
-
-
-  getDeviceTypeDropdown(optionValue, dropdownLabel){
-    if (this._config.device_family === 'none') {
-      this._config.device_type = 'other';
-      this._config.entity = 'none';
-      delete this._config['apple_tv_remote_entity'];
-      delete this._config['android_tv_remote_entity'];
-      this.configChanged;
-      return;
-    }
-    var family = this._config.device_family;
-    var optionMenu = String();
-    Object.entries(devices).forEach(deviceFamily => {
-      const [familyKey,familyValue] = deviceFamily;
-      if(familyKey == family) {
-        var blankWasDisplayed = false;
-        Object.entries(familyValue).forEach(deviceCategory => {
-          const [categorykey,categoryvalue] = deviceCategory;
-          if(categorykey == 'meta') {return}
-          if(optionValue in categoryvalue) {blankWasDisplayed = true}
-          if(!(optionValue in categoryvalue) && !(blankWasDisplayed)){
-            optionMenu += '<option value="" selected disabled> - - - choose one - - - </option>';
-            blankWasDisplayed = true;
+      <details class="editorDropdown ${name === 'defaultRemoteStyle_override' ? 'remoteStyleMenu' : ''}"
+        @focusout=${ev => {
+          if (!ev.currentTarget.contains(ev.relatedTarget)) ev.currentTarget.open = false;
+        }}
+        @keydown=${ev => {
+          if (ev.key === 'Escape') {
+            ev.preventDefault(); ev.stopPropagation(); close(ev.currentTarget);
           }
-          if(categorykey != 'noCategory'){optionMenu += '<optgroup label="'+ categorykey + '">'}
-          Object.entries(categoryvalue).forEach(deviceEntry => {
-            const [devicekey,deviceproperties] = deviceEntry;
-            if(deviceproperties.supported) {
-              if(devicekey == this._config.device_type) {
-                optionMenu += '<option value="'+ devicekey +'" selected>'+ deviceproperties.friendlyName +'</option>';
-              }
-              else {
-                optionMenu += '<option value="'+ devicekey +'">'+ deviceproperties.friendlyName +'</option>';
-              }
-            }
-            else {
-              optionMenu += '<option value="'+ devicekey +'" disabled>'+ deviceproperties.friendlyName +'</option>';
-            }
-          })
-          if(categorykey != 'noCategory'){optionMenu += '</optgroup>'}
-        })
-      }
-    })
-    return html `
-      ${dropdownLabel}:<br>
-      <select name="device_type" id="device_type" style="padding: .6em; font-size: 1em;"
-        .value=${this._config.device_type}
-        @focusout=${this.configChanged}
-        @change=${this.configChanged}
-      >
-        ${unsafeHTML(optionMenu)}
-      </select>
-      <br>
-      <br>
+        }}>
+        <summary id=${name + '_label'}>${label}: ${selected?.label || ''}</summary>
+        <select name=${name} id=${name} aria-labelledby=${name + '_label'} size=${Math.max(2, Math.min(8, choices.length))} .value=${value}
+          @change=${this.configChanged}
+          @click=${ev => {
+            if (ev.target.tagName === 'OPTION' && !ev.target.disabled) close(ev.currentTarget.closest('details'));
+          }}
+          @keydown=${ev => {
+            if (ev.key === 'Enter') { ev.preventDefault(); close(ev.currentTarget.closest('details')); }
+          }}>
+          ${repeat(options, option => option.options ? 'group:' + option.label : option.value,
+            option => option.options
+              ? html`<optgroup label=${option.label}>${repeat(option.options, item => item.value, renderOption)}</optgroup>`
+              : renderOption(option))}
+        </select>
+      </details>
     `;
   }
 
+  getDeviceFamiliesDropdown(value) {
+    return this._renderDropdown('device_family', this.translateToUsrLang('Device Family'),
+      [...devicemap].map(([family, { meta }]) => ({ value: family,
+        label: this.translateToUsrLang(meta.friendlyName), disabled: !meta.supported })), value);
+  }
+
+  _renderEntityDropdown(name, label, entities, saved) {
+    return html`${this._renderDropdown(name, label, [
+      { value: '', label: ' - - - - ' },
+      ...entities.map(id => ({ value: id, label: this.hass.states[id].attributes.friendly_name || id })),
+    ], saved)}<br><br>`;
+  }
+
+  getMediaPlayerEntityDropdown() {
+    const family = this._config.device_family;
+    if (family === 'none') return;
+    const [platform, label] = family === 'apple-tv'
+      ? ['apple_tv', 'Apple TV Media Player']
+      : family === 'roku' ? ['roku', 'Roku Media Player'] : ['androidtv', 'Android Debug Bridge'];
+    const entity = this.translateToUsrLang('Entity');
+    const heading = ['he', 'fr'].includes(this.hass.config?.language)
+      ? `${entity} ${label}` : `${label} ${entity}`;
+    return this._renderEntityDropdown('entity', heading,
+      this.getMediaPlayerEntitiesByPlatform(platform), this._config.entity);
+  }
+
+  getAssociatedRemoteEntityDropdown() {
+    const family = this._config.device_family;
+    if (family === 'amazon-fire' || family === 'none') return;
+    const [name, platform, label] = family === 'apple-tv'
+      ? ['apple_tv_remote_entity', 'apple_tv', 'Apple TV Remote']
+      : family === 'roku' ? ['roku_remote_entity', 'roku', 'Roku Remote']
+        : ['android_tv_remote_entity', 'androidtv_remote', 'Android TV Remote'];
+    const optional = name === 'android_tv_remote_entity';
+    let heading = `${this.translateToUsrLang('Associated')} ${label} ${this.translateToUsrLang('Entity')}`;
+    if (optional) heading += ` (${this.translateToUsrLang('optional')})`;
+    if (this.hass.config?.language === 'he') heading = `ישות משויכת ל-${label}`;
+    if (optional && this.hass.config?.language === 'fr') heading = 'Entité Android TV Remote Associé (optionnel)';
+    return this._renderEntityDropdown(name, heading,
+      this.getRemoteEntitiesByPlatform(platform), this._config[name]);
+  }
+
+  getDeviceTypeDropdown(value, label) {
+    if (this._config.device_family === 'none') return;
+    const categories = Object.entries(devicemap.get(this._config.device_family) || {})
+      .filter(([name]) => name !== 'meta');
+    const known = categories.some(([, entries]) => Object.hasOwn(entries, value));
+    const options = categories.map(([name, entries]) => {
+      const choices = Object.entries(entries).map(([id, device]) => ({
+        value: id, label: device.friendlyName, disabled: !device.supported,
+      }));
+      return name === 'noCategory' ? choices : [{ label: name, options: choices }];
+    }).flat();
+    if (!known) options.unshift({ value: '', label: ' - - - choose one - - - ', disabled: true });
+    return html`${this._renderDropdown('device_type', label, options, known ? value : '')}<br><br>`;
+  }
 
   getRemoteStyleDropdown(deviceName) {
     const options = [
@@ -8510,69 +4444,18 @@ class FiremoteCardEditor extends LitElement {
       { value: 'AL1', label: `${this.translateToUsrLang('App Launcher')} 1` },
       { value: 'AL2', label: `${this.translateToUsrLang('App Launcher')} 2` },
     ];
-    const value = this._config.defaultRemoteStyle_override || '';
-    const selected = options.find(option => option.value === value) || options[0];
-    const close = () => {
-      const menu = this.shadowRoot.querySelector('.remoteStyleMenu');
-      menu.open = false;
-      menu.querySelector('summary').focus();
-    };
-    // Keep the choices in the editor's scroll flow. A native popup ignores CSS
-    // height limits and can extend beyond Home Assistant's configuration dialog.
-    return html`
-      <details class="remoteStyleMenu"
-        @focusout=${ev => {
-          if (!ev.currentTarget.contains(ev.relatedTarget)) ev.currentTarget.open = false;
-        }}
-        @keydown=${ev => {
-          if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
-        }}>
-        <summary id="remoteStyleLabel">${this.translateToUsrLang('Remote Style')}: ${selected.label}</summary>
-        <select name="defaultRemoteStyle_override" id="defaultRemoteStyle_override"
-          aria-labelledby="remoteStyleLabel" size="8" .value=${value}
-          @change=${this.configChanged}
-          @click=${ev => { if (ev.target.tagName === 'OPTION') close(); }}
-          @keydown=${ev => {
-            if (ev.key === 'Enter') { ev.preventDefault(); close(); }
-          }}>
-          ${options.map(option => html`<option value=${option.value}
-            ?selected=${option.value === value}>${option.label}</option>`)}
-        </select>
-      </details>
-    `;
+    return this._renderDropdown('defaultRemoteStyle_override', this.translateToUsrLang('Remote Style'),
+      options, this._config.defaultRemoteStyle_override || '');
   }
 
   getCompatibilityModeDropdown(optionValue, deviceFriendlyName){
     if(['apple-tv', 'chromecast', 'homatics', 'nvidia-shield', 'onn', 'roku', 'none'].includes(this._config.device_family)) { return; }
     if(['xiaomi-tv-stick-4k', 'fire_tv_stick_4k_max_second_gen', 'fire_tv_stick_4k_second_gen'].includes(this._config.device_type)) { return; }
-    var heading = this.translateToUsrLang('Compatibility Mode');
-    return html`
-        ${heading}:<br>
-        <select name="compatibility_mode" id="compatibility_mode" style="padding: .6em; font-size: 1em;"
-          .value=${optionValue}
-          @focusout=${this.configChanged}
-          @change=${this.configChanged}
-        >
-          <option value="default">${this.translateToUsrLang('Default for')} ${deviceFriendlyName}</option>
-          <option value="strong">${this.translateToUsrLang('Strong (Slower)')}</option>
-          <option value="event0">event0</option>
-          <option value="event1">event1</option>
-          <option value="event2">event2</option>
-          <option value="event3">event3</option>
-          <option value="event4">event4</option>
-          <option value="event5">event5</option>
-          <option value="event6">event6</option>
-          <option value="event7">event7</option>
-          <option value="event8">event8</option>
-          <option value="event9">event9</option>
-          <option value="event10">event10</option>
-          <option value="event11">event11</option>
-          <option value="event12">event12</option>
-          <option value="event13">event13</option>
-        </select>
-        <br>
-        <br>
-    `;
+    return html`${this._renderDropdown('compatibility_mode', this.translateToUsrLang('Compatibility Mode'), [
+      { value: 'default', label: `${this.translateToUsrLang('Default for')} ${deviceFriendlyName}` },
+      { value: 'strong', label: this.translateToUsrLang('Strong (Slower)') },
+      ...Array.from({ length: 14 }, (_, i) => ({ value: 'event' + i, label: 'event' + i })),
+    ], optionValue || 'default')}<br><br>`;
   }
 
 
@@ -8582,15 +4465,12 @@ class FiremoteCardEditor extends LitElement {
     if (remoteStyle === 'AL1' || remoteStyle === 'AL2') {
       // Show existing slots (including gaps) plus a spare instead of creating
       // catalog-size squared option elements. Selecting the spare adds another.
-      const last = Object.keys(this._config).reduce((max, key) => {
-        const match = /^app_launch_(\d+)$/.exec(key);
-        return match && this._config[key] ? Math.max(max, Number(match[1])) : max;
-      }, 0);
-      count = Math.max(6, last + 1);
+      count = launcherSlotCount(this._config, 1);
     }
     const catalog = appCatalogState(this.hass, this._config);
     const discoveredApps = deviceApps(this.hass, this._config);
     const apps = (discoveredApps || []).map(app => ['source:' + encodeURIComponent(app.id), app.name]);
+    const appValues = new Set(apps.map(([id]) => id));
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
       <br>
@@ -8603,17 +4483,14 @@ class FiremoteCardEditor extends LitElement {
       ` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;
-        const saved = this._config['app_launch_' + number] || '';
-        const alias = saved.startsWith('source:') && discoveredApps?.find(app => app.name === decodeURIComponent(saved.slice(7)));
-        const value = apps.some(([id]) => id === saved) ? saved : alias ? 'source:' + encodeURIComponent(alias.id) : saved;
-        return html`
-          ${heading} ${number}:
-          <select name="app_launch_${number}" id="app_launch_${number}" style="padding: .6em; font-size: 1em;"
-            .value=${value} @change=${this.configChanged}>
-            <option value="" ?selected=${!apps.some(([id]) => id === value)}> - - - - </option>
-            ${repeat(apps, ([id]) => id, ([id, name]) => html`<option value=${id} ?selected=${id === value}>${name}</option>`)}
-          </select><br>
-        `;
+        const configured = this._config['app_launch_' + number];
+        const saved = typeof configured === 'string' ? configured : '';
+        const alias = saved.startsWith('source:') && resolveDeviceApp(discoveredApps, decodeSource(saved));
+        const value = appValues.has(saved) ? saved : alias ? 'source:' + encodeURIComponent(alias.id) : saved;
+        return html`${this._renderDropdown('app_launch_' + number, `${heading} ${number}`, [
+          { value: '', label: ' - - - - ' },
+          ...apps.map(([id, name]) => ({ value: id, label: name })),
+        ], value)}<br>`;
       })}
     `;
   }
@@ -8640,19 +4517,14 @@ class FiremoteCardEditor extends LitElement {
           ${this.translateToUsrLang('Custom Remote Skin')}:&nbsp;&nbsp;<input type="color" name="skin" id="skin" .value=${this._config.skin || '#4682b4'} @change=${this.configChanged}>
         </label>
         <br><br>
-          ${this.translateToUsrLang('DPad Style')}:
-          <select name="dpad_style" id="dpad_style}" style="padding: .6em; font-size: 1em;"
-          .value=${this._config.dpad_style || ''}
-          @focusout=${this.configChanged}
-          @change=${this.configChanged}
-        >
-          <option value="amazon-fire">Amazon Fire</option>
-          <option value="apple-tv-black">Apple TV ${this.translateToUsrLang('black')}</option>
-          <option value="apple-tv-silver">Apple TV ${this.translateToUsrLang('silver')}</option>
-          <option value="chromecast">Chromecast</option>
-          <option value="xiaomi">Xiaomi</option>
-          <option value="minimal">${this.translateToUsrLang('Minimal')}</option>
-        </select>
+          ${this._renderDropdown('dpad_style', this.translateToUsrLang('DPad Style'), [
+            { value: 'amazon-fire', label: 'Amazon Fire' },
+            { value: 'apple-tv-black', label: `Apple TV ${this.translateToUsrLang('black')}` },
+            { value: 'apple-tv-silver', label: `Apple TV ${this.translateToUsrLang('silver')}` },
+            { value: 'chromecast', label: 'Chromecast' },
+            { value: 'xiaomi', label: 'Xiaomi' },
+            { value: 'minimal', label: this.translateToUsrLang('Minimal') },
+          ], this._config.dpad_style || 'amazon-fire')}
         <br><br><hr><br>
       `;
     }
@@ -8674,15 +4546,8 @@ class FiremoteCardEditor extends LitElement {
       return html``;
     }
 
-    if(!this._config.device_family) {
-        this._config.device_family = devicemap.keys().next().value;
-    }
-
     var appLauncherRelativeScaleSlide = '';
     if(this._config.defaultRemoteStyle_override == 'AL2') {
-      if(!(this._config.app_launcher_relative_size)) {
-        this._config.app_launcher_relative_size = 0;
-      }
       appLauncherRelativeScaleSlide = html `
         <br>
         <label for="relativefader">${this.translateToUsrLang('App Launcher Relative Scale')}:&nbsp;
@@ -8692,19 +4557,15 @@ class FiremoteCardEditor extends LitElement {
     }
 
     // Get current device's Attributes AND use any applicable overrides from user conf
-    var confRef = this._config;
-    function getDeviceAttribute(deviceAttribute){
-      return deviceAttributeQuery(deviceAttribute, confRef);
-    }
-
-    var deviceModelSelectorLabel = devicemap.get(this._config.device_family).meta.friendlyName + ' ' + this.translateToUsrLang('Device Model');
-    if (this.hass.config.language == 'he') {
-      deviceModelSelectorLabel =  this.translateToUsrLang('Device Model') + ' ' + devicemap.get(this._config.device_family).meta.friendlyName;
-    }
+    const getDeviceAttribute = attribute => deviceAttributeQuery(attribute, this._config);
+    const familyName = devicemap.get(this._config.device_family)?.meta.friendlyName || this._config.device_family;
+    const modelLabel = this.translateToUsrLang('Device Model');
+    const deviceModelSelectorLabel = this.hass.config?.language === 'he'
+      ? `${modelLabel} ${familyName}` : `${familyName} ${modelLabel}`;
 
     if(this._config.device_type == null || this._config.device_type == '') {
       return html`
-        ${this.translateToUsrLang('Device Family')}: <br>
+        <p class="firemoteFrontendVersion">Firemote frontend ${FiremoteFrontendVersion}</p>
         ${this.getDeviceFamiliesDropdown(this._config.device_family)}
         <br>
 
@@ -8713,27 +4574,24 @@ class FiremoteCardEditor extends LitElement {
     else {
 
       return html`
-        ${this.translateToUsrLang('Device Family')}: <br>
+        <p class="firemoteFrontendVersion">Firemote frontend ${FiremoteFrontendVersion}</p>
         ${this.getDeviceFamiliesDropdown(this._config.device_family)}
         <br>
 
         ${this.getDeviceTypeDropdown(this._config.device_type, deviceModelSelectorLabel)}
 
-        ${this.getMediaPlayerEntityDropdown(this._config.entity)}
+        ${this.getMediaPlayerEntityDropdown()}
 
-        ${this.getAssociatedRemoteEntityDropdown(this._config.android_tv_remote_entity)}
+        ${this.getAssociatedRemoteEntityDropdown()}
 
         <hr>
 
         <br>
-        <label for="scale_mode">${this.translateToUsrLang('Scale mode')}:<br>
-          <select name="scale_mode" id="scale_mode" .value=${this._config.scale_mode || 'fixed'}
-            @change=${this.configChanged} style="padding: .6em; font-size: 1em;">
-            <option value="fixed">${this.translateToUsrLang('Fixed percentage')}</option>
-            <option value="viewport-height">${this.translateToUsrLang('Viewport height')}</option>
-            <option value="viewport-width">${this.translateToUsrLang('Viewport width')}</option>
-          </select>
-        </label>
+        ${this._renderDropdown('scale_mode', this.translateToUsrLang('Scale mode'), [
+          { value: 'fixed', label: this.translateToUsrLang('Fixed percentage') },
+          { value: 'viewport-height', label: this.translateToUsrLang('Viewport height') },
+          { value: 'viewport-width', label: this.translateToUsrLang('Viewport width') },
+        ], this._config.scale_mode || 'fixed')}
         <br><br>
         <label for="scale">${this.translateToUsrLang('Scale')}:&nbsp;
           <input type="number" min="1" step="1" required .value=${String(this._config.scale || 100)} id="scale" name="scale"
@@ -8762,12 +4620,9 @@ class FiremoteCardEditor extends LitElement {
         </label>
         <br>
         <br>
-        ${this.translateToUsrLang('Name Position')}:<br>
-        <select name="name_position" id="name_position" .value=${this._config.name_position || 'hidden'} @focusout=${this.configChanged} @change=${this.configChanged}  style="padding: .6em; font-size: 1em;">
-          <option value="hidden" selected>${this.translateToUsrLang('hidden')}</option>
-          <option value="top">${this.translateToUsrLang('top')}</option>
-          <option value="bottom">${this.translateToUsrLang('bottom')}</option>
-        </select><br>
+        ${this._renderDropdown('name_position', this.translateToUsrLang('Name Position'),
+          ['hidden', 'top', 'bottom'].map(value => ({ value, label: this.translateToUsrLang(value) })),
+          this._config.name_position || 'hidden')}<br>
         <br>
         <label for="visible_name_text_color">${this.translateToUsrLang('Device Name Text Color')}:<br><input type="color" name="visible_name_text_color" id="visible_name_text_color" .value=${this._config.visible_name_text_color || '#000000'} @change=${this.configChanged}></label>
 

@@ -108,6 +108,58 @@ try {
   for (let i = 0; i < 5; i++) card._updateViewportScale();
   check(Math.abs(size().height - stableHeight) < 0.01,
     'repeated dashboard measurements do not feed back into scaling');
+  // Exercise actual image loading and layout with both APK icons and TV banners.
+  const imageURL = (width, height) => 'data:image/svg+xml,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="red"/></svg>`);
+  card.hass = { ...card.hass, states: { 'sensor.apps': { state: '2', attributes: {
+    firemote_entity: 'none', apps: [
+      { id: 'banner', name: 'TV banner', icon: imageURL(320, 180) },
+      { id: 'square', name: 'Square icon', icon: imageURL(96, 96) },
+    ],
+  } } } };
+  const imageLaunchers = { app_launch_1: 'source:banner', app_launch_2: 'source:square' };
+  function paintedSize(image) {
+    const bounds = image.getBoundingClientRect();
+    const factor = Math.min(bounds.width / image.naturalWidth, bounds.height / image.naturalHeight);
+    return { width: image.naturalWidth * factor, height: image.naturalHeight * factor };
+  }
+  for (const style of ['AF6', 'AL1', 'AL2', 'NS2', 'AR1', 'CC1', 'HO1']) {
+    let previous;
+    for (const scale of [50, 100, 200]) {
+      await configure({ ...imageLaunchers, defaultRemoteStyle_override: style, scale_mode: 'fixed', scale });
+      const images = [...card.shadowRoot.querySelectorAll('.deviceAppIcon')];
+      check(images.length === 2, `${style} renders both discovered app images`);
+      await Promise.all(images.map(image => image.decode()));
+      const [banner, square] = images.map(paintedSize);
+      for (const image of images) {
+        const bounds = image.getBoundingClientRect();
+        const button = image.parentElement.getBoundingClientRect();
+        check(bounds.left >= button.left && bounds.right <= button.right &&
+          bounds.top >= button.top && bounds.bottom <= button.bottom,
+          `${style} ${scale}% image artwork fits within its launcher`);
+        check(getComputedStyle(image).objectFit === 'contain', `${style} preserves image proportions`);
+        check(image.nextElementSibling.hidden, `${style} loaded icons hide fallback labels`);
+      }
+      const button = images[0].parentElement.getBoundingClientRect();
+      check(banner.width > button.width * 0.45, `${style} ${scale}% TV banners use the launcher width`);
+      check(square.height > button.height * 0.65, `${style} ${scale}% square icons use the launcher height`);
+      if (previous) check(Math.abs(banner.width / previous.width - 2) < 0.01 &&
+        Math.abs(square.height / previous.height - 2) < 0.01, `${style} image artwork scales with fixed percentage`);
+      previous = { width: banner.width, height: square.height };
+    }
+  }
+  let previousImages;
+  for (const scale of [40, 80]) {
+    await configure({ ...imageLaunchers, defaultRemoteStyle_override: 'AL2', scale_mode: 'viewport-width', scale });
+    const images = [...card.shadowRoot.querySelectorAll('.deviceAppIcon')];
+    await Promise.all(images.map(image => image.decode()));
+    const sizes = images.map(paintedSize);
+    if (previousImages) check(sizes.every((value, i) =>
+      Math.abs(value.width / previousImages[i].width - 2) < 0.01 &&
+      Math.abs(value.height / previousImages[i].height - 2) < 0.01),
+      'TV banners and square icons scale proportionally with viewport percentage');
+    previousImages = sizes;
+  }
   const editor = document.createElement('firemote-card-editor');
   editor.hass = card.hass;
   editor.setConfig(config);

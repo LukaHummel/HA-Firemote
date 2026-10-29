@@ -101,9 +101,8 @@ Short demonstration videos also exist for [Roku Firemote](https://www.youtube.co
      - Set up the Home Assistant [Apple TV Integration](https://www.home-assistant.io/integrations/apple_tv) and connect it to your device.  This will create a "Media Player" entity, and a "Remote" entity automatically.
    - Roku Users
      - Set up the Home Assistant [Roku Integration](https://www.home-assistant.io/integrations/roku) and connect it to your device.  This will create a "Media Player" entity, a "Remote" entity, and multiple others as well.
-1. Click on the HACS sidebar option, then type "Firemote Card" into the search bar
-1. Use the 3 dots on the right side of the search result to select **Download** or click on the search result then tap the DOWNLOAD button in the lower right.
-1. You will be prompted to reload your browser.  Click the **RELOAD** button to continue
+1. Add this fork to HACS as an **Integration** and download **Firemote**, as described [above](#install-through-hacs).
+1. Follow the [integration setup instructions](custom_components/firemote_apps/README.md#install) to restart Home Assistant, configure Firemote, and register `/firemote/frontend/HA-Firemote.js` as a dashboard resource.
 
 ## OR Install Manually
 1. Turn on ADB/USB/Network debugging on your Amazon, Homatics, onn., Shield, Xiaomi, Chromecast, or Android TV device - [Video Tutorial](https://www.youtube.com/watch?v=XL7neKn1d-Y)
@@ -117,8 +116,26 @@ Short demonstration videos also exist for [Roku Firemote](https://www.youtube.co
      - Set up the Home Assistant [Apple TV Integration](https://www.home-assistant.io/integrations/apple_tv) and connect it to your device.  This will create a "Media Player" entity, and a "Remote" entity automatically.
    - Roku Users
      - Set up the Home Assistant [Roku Integration](https://www.home-assistant.io/integrations/roku) and connect it to your device.  This will create a "Media Player" entity, a "Remote" entity, and multiple others as well.
-1. Download the contents of the [dist/](https://github.com/PRProd/HA-Firemote/blob/main/dist/) directory, and place it in your Home Assistant /config/www directory
-1. [Register the HA-Firemote.js file that you just installed as a new resource](https://developers.home-assistant.io/docs/frontend/custom-ui/registering-resources/)
+1. Copy [custom_components/firemote_apps/](custom_components/firemote_apps/) into your Home Assistant `/config/custom_components/` directory, or build an [install ZIP](custom_components/firemote_apps/README.md#build-the-bundle) and extract it into `/config/`.
+1. Follow the [integration setup instructions](custom_components/firemote_apps/README.md#install) to restart Home Assistant, configure Firemote, and register `/firemote/frontend/HA-Firemote.js` as a dashboard resource.
+
+For a standalone Apple TV or Roku card installation, copy the contents of
+[custom_components/firemote_apps/frontend/](custom_components/firemote_apps/frontend/)
+into `/config/www/firemote/` and register `/local/firemote/HA-Firemote.js` as a
+**JavaScript Module** resource. Android / Fire TV app discovery requires the full
+integration.
+
+## Repository layout
+
+- `custom_components/firemote_apps/`: installable Home Assistant integration.
+- `custom_components/firemote_apps/frontend/`: card source and bundled JavaScript dependencies; edit these files directly.
+- `scripts/`: version checks and install ZIP packaging.
+- `tests/`: backend, packaging, and browser regression tests.
+- `build/`: generated install archives, ignored by Git.
+
+The frontend keeps catalog lookup in `app-catalog.js`, dashboard sizing in
+`remote-layouts.js`, and static card styles in `remote-styles.js`.
+`HA-Firemote.js` contains the card, editor, and device command handling.
 
 <br>
 <br>

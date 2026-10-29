@@ -1,0 +1,292 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firemote command lifecycle regression tests</title>
+<pre id="results">Running…</pre>
+<script type="module">
+import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
+
+const assertions = [];
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+  assertions.push(message);
+}
+const base = {
+  entity: 'media_player.tv', device_family: 'amazon-fire', device_type: 'fire_tv_4_series',
+  defaultRemoteStyle_override: 'AF5', compatibility_mode: 'default',
+};
+const calls = [];
+const card = document.createElement('firemote-card');
+card.hass = {
+  config: { language: 'en' }, entities: {},
+  states: { 'media_player.tv': { state: 'playing', attributes: { friendly_name: 'TV' } } },
+  callService: (...args) => calls.push(args),
+};
+card.setConfig(base);
+document.body.append(card);
+await card.updateComplete;
+
+// Advance only the interaction clock: no wall-clock waits or physical TV commands.
+let now = 0;
+let nextTimer = 1;
+const timers = new Map();
+const native = {
+  setTimeout: window.setTimeout, clearTimeout: window.clearTimeout,
+  setInterval: window.setInterval, clearInterval: window.clearInterval,
+  add: EventTarget.prototype.addEventListener, remove: EventTarget.prototype.removeEventListener,
+};
+window.setTimeout = (callback, delay = 0) => {
+  const id = nextTimer++;
+  timers.set(id, { callback, at: now + delay, interval: 0 });
+  return id;
+};
+window.setInterval = (callback, delay) => {
+  const id = nextTimer++;
+  timers.set(id, { callback, at: now + delay, interval: delay });
+  return id;
+};
+window.clearTimeout = window.clearInterval = id => timers.delete(id);
+const observedTypes = new Set(['pointerup', 'mouseup', 'pointercancel', 'lostpointercapture', 'blur', 'visibilitychange', 'touchmove', 'mouseout']);
+const listeners = [];
+EventTarget.prototype.addEventListener = function (type, callback, options) {
+  if (observedTypes.has(type)) listeners.push({ node: this, type, callback });
+  return native.add.call(this, type, callback, options);
+};
+EventTarget.prototype.removeEventListener = function (type, callback, options) {
+  const index = listeners.findIndex(item => item.node === this && item.type === type && item.callback === callback);
+  if (index >= 0) listeners.splice(index, 1);
+  return native.remove.call(this, type, callback, options);
+};
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+async function advance(milliseconds) {
+  const end = now + milliseconds;
+  while (true) {
+    const pending = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+    if (!pending) break;
+    const [id, timer] = pending;
+    now = timer.at;
+    if (timer.interval) timer.at += timer.interval;
+    else timers.delete(id);
+    timer.callback();
+    await flush();
+  }
+  now = end;
+  await flush();
+}
+async function configure(options = {}) {
+  card.setConfig({ ...base, ...options });
+  await card.updateComplete;
+  calls.length = 0;
+}
+function target(id) {
+  let button = card.shadowRoot.getElementById(id);
+  if (!button) {
+    button = document.createElement('button');
+    button.id = id;
+    button.addEventListener('pointerdown', event => card.buttonDown(event));
+    card.shadowRoot.append(button);
+  }
+  return button;
+}
+function pointer(node, type, pointerId = 1, options = {}) {
+  node.dispatchEvent(new PointerEvent(type, { bubbles: true, composed: true, pointerId, button: 0, isPrimary: true, ...options }));
+}
+async function click(id) {
+  const button = target(id);
+  pointer(button, 'pointerdown');
+  await advance(100);
+  pointer(button, 'pointerup');
+  await flush();
+}
+function idle(message) {
+  check(!card._buttonInteraction && ![...timers.values()].some(timer => timer.interval) && listeners.length === 0, message);
+}
+try {
+  const directions = { up: 103, left: 105, right: 106, down: 108 };
+  const modes = [
+    { name: 'Apple TV', config: { device_family: 'apple-tv', apple_tv_remote_entity: 'remote.apple' }, domain: 'remote', delay: 1025 },
+    { name: 'Roku', config: { device_family: 'roku', roku_remote_entity: 'remote.roku' }, domain: 'remote', delay: 250 },
+    { name: 'Android TV Remote', config: { device_family: 'chromecast', android_tv_remote_entity: 'remote.android' }, domain: 'remote', delay: 525 },
+    { name: 'ADB fallback', config: { compatibility_mode: 'strong' }, domain: 'androidtv', delay: 250 },
+    { name: 'Linux input', config: {}, domain: 'androidtv' },
+  ];
+  for (const mode of modes) {
+    for (const [name, code] of Object.entries(directions)) {
+      await configure(mode.config);
+      await click(name + '-button');
+      const [domain, service, data] = calls[0] || [];
+      const command = mode.name === 'Android TV Remote' ? 'KEYCODE_DPAD_' + name.toUpperCase()
+        : mode.name === 'ADB fallback' ? name.toUpperCase() : name;
+      check(calls.length === 1 && domain === mode.domain && service === (domain === 'remote' ? 'send_command' : 'adb_command') &&
+        data.entity_id === (mode.config.apple_tv_remote_entity || mode.config.roku_remote_entity || mode.config.android_tv_remote_entity || base.entity) &&
+        (mode.name === 'Linux input' ? data.command === `sendevent /dev/input/event0 1 ${code} 1 && sendevent /dev/input/event0 0 0 0 && sendevent /dev/input/event0 1 ${code} 0 && sendevent /dev/input/event0 0 0 0` : data.command === command),
+        `${mode.name} ${name} click preserves the command payload`);
+      idle(`${mode.name} ${name} click removes temporary listeners`);
+    }
+  }
+  for (const mode of modes.filter(mode => mode.delay)) {
+    await configure(mode.config);
+    const button = target('up-button');
+    pointer(button, 'pointerdown');
+    await advance(500);
+    check(calls.length === 1, `${mode.name} hold sends its initial command at 500ms`);
+    await advance(mode.delay - 1);
+    check(calls.length === 1, `${mode.name} hold preserves its repeat interval`);
+    await advance(1);
+    check(calls.length === 2, `${mode.name} hold repeats at the expected interval`);
+    pointer(document.body, 'pointerup');
+    await advance(2000);
+    check(calls.length === 2, `${mode.name} release outside the button stops repeating`);
+    idle(`${mode.name} hold removes all release listeners`);
+  }
+  for (const cancel of ['pointercancel', 'lostpointercapture', 'blur', 'visibilitychange', 'mouseout', 'touchmove', 'config', 'disconnect']) {
+    await configure({ compatibility_mode: 'strong' });
+    const button = target('up-button');
+    pointer(button, 'pointerdown');
+    await advance(100);
+    if (cancel === 'pointercancel') pointer(document.body, cancel);
+    else if (cancel === 'blur') window.dispatchEvent(new Event(cancel));
+    else if (cancel === 'visibilitychange') {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event(cancel));
+      delete document.hidden;
+    }
+    else if (cancel === 'config') card.setConfig({ ...base, compatibility_mode: 'strong', scale: 90 });
+    else if (cancel === 'disconnect') card.remove();
+    else button.dispatchEvent(new Event(cancel, { bubbles: true, composed: true }));
+    await advance(1500);
+    check(calls.length === 0, `${cancel} cancels a pending press without sending a command`);
+    idle(`${cancel} cleans pending interaction resources`);
+    if (!card.isConnected) { document.body.append(card); await card.updateComplete; }
+  }
+  for (const cancel of ['pointercancel', 'blur', 'config', 'disconnect', 'new press']) {
+    await configure({ compatibility_mode: 'strong' });
+    pointer(target('up-button'), 'pointerdown');
+    await advance(800);
+    const count = calls.length;
+    if (cancel === 'pointercancel') pointer(document.body, cancel);
+    else if (cancel === 'blur') window.dispatchEvent(new Event(cancel));
+    else if (cancel === 'visibilitychange') {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event(cancel));
+      delete document.hidden;
+    }
+    else if (cancel === 'config') card.setConfig(base);
+    else if (cancel === 'disconnect') card.remove();
+    else { pointer(target('down-button'), 'pointerdown'); pointer(document.body, 'pointercancel'); }
+    await advance(1500);
+    check(calls.length === count && count > 1, `${cancel} stops an active repeating hold`);
+    idle(`${cancel} cleans active interaction resources`);
+    if (!card.isConnected) { document.body.append(card); await card.updateComplete; }
+  }
+  for (const cancel of ['pointerup', 'pointercancel', 'blur', 'config', 'disconnect']) {
+    await configure();
+    pointer(target('up-button'), 'pointerdown');
+    await advance(500);
+    check(calls.length === 1 && calls[0][2].command.includes(' 1 103 1 && '), `${cancel}: raw hold presses its Linux input key`);
+    if (cancel.startsWith('pointer')) pointer(document.body, cancel);
+    else if (cancel === 'blur') window.dispatchEvent(new Event(cancel));
+    else if (cancel === 'visibilitychange') {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event(cancel));
+      delete document.hidden;
+    }
+    else if (cancel === 'config') card.setConfig({ ...base, scale: 90 });
+    else card.remove();
+    pointer(document.body, 'pointerup');
+    await advance(1500);
+    check(calls.length === 2 && calls[1][2].command.includes(' 1 103 0 && '), `${cancel}: raw hold releases its key exactly once`);
+    idle(`${cancel}: raw hold removes all release listeners`);
+    if (!card.isConnected) { document.body.append(card); await card.updateComplete; }
+  }
+  await configure({ compatibility_mode: 'strong' });
+  pointer(target('up-button'), 'pointerdown', 7);
+  pointer(document.body, 'pointerup', 8);
+  await advance(500);
+  check(calls.length === 1 && card._buttonInteraction.active, 'another pointer cannot release the active press');
+  pointer(document.body, 'pointercancel', 7);
+  idle('matching pointer cancellation cleans the interaction');
+
+  await configure({ compatibility_mode: 'strong' });
+  const button = target('up-button');
+  const child = document.createElement('span');
+  button.append(child);
+  pointer(child, 'pointerdown');
+  pointer(child, 'pointerup');
+  await flush();
+  check(calls.length === 1 && calls[0][2].command === 'UP', 'nested button content dispatches using the owning button ID');
+  idle('nested button click removes temporary listeners');
+  child.remove();
+
+  for (let digit = 0; digit <= 9; digit++) {
+    await configure({ compatibility_mode: 'strong' });
+    await click(`num${digit}-button`);
+    check(calls.length === 1 && calls[0][2].command === 'adb shell input keyevent ' + (digit + 7), `digit ${digit} retains its Android keycode`);
+    await configure();
+    await click(`num${digit}-button`);
+    const code = digit === 0 ? 11 : digit + 1;
+    check(calls.length === 1 && calls[0][2].command.includes(' 1 ' + code + ' 1 && ') && calls[0][2].command.includes(' 1 ' + code + ' 0 && '), `digit ${digit} retains its Linux input keycode`);
+  }
+  await configure({ compatibility_mode: 'strong' });
+  for (let index = 0; index < 20; index++) {
+    pointer(target('up-button'), 'pointerdown');
+    await advance(500);
+    pointer(document.body, 'pointerup');
+    await flush();
+  }
+  idle('twenty successive holds leave no accumulated listeners or repeat timers');
+
+  await configure({ compatibility_mode: 'strong' });
+  pointer(target('up-button'), 'pointerdown');
+  pointer(target('up-button'), 'pointerup');
+  card.setConfig({ ...base, compatibility_mode: 'strong', entity: 'media_player.other' });
+  await flush();
+  check(calls.length === 0, 'configuration replacement cancels dispatch queued by the previous click');
+
+  for (const [mode, buttonID, delay, command] of [
+    [{ compatibility_mode: 'strong' }, 'center-button', 250, 'adb shell input keyevent 23'],
+    [{ device_family: 'roku', roku_remote_entity: 'remote.roku' }, 'replay-button', 250, 'replay'],
+    [{ device_family: 'roku', roku_remote_entity: 'remote.roku' }, 'rewind-button', 150, 'reverse'],
+    [{ device_family: 'chromecast', android_tv_remote_entity: 'remote.android' }, 'fastforward-button', 100, 'KEYCODE_MEDIA_FAST_FORWARD'],
+    [{ device_family: 'apple-tv', apple_tv_remote_entity: 'remote.apple' }, 'volume-up-button', 250, 'volume_up'],
+    [{ device_family: 'nvidia-shield' }, 'volume-down-button', 250, 'adb shell cmd media_session volume --show --adj lower'],
+    [{ device_family: 'roku', roku_remote_entity: 'remote.roku' }, 'channel-up-button', 250, 'channel_up'],
+    [{ device_type: 'fire_tv_stick_4k_second_gen' }, 'channel-down-button', 250, 'adb shell input keyevent KEYCODE_CHANNEL_DOWN'],
+  ]) {
+    await configure(mode);
+    pointer(target(buttonID), 'pointerdown');
+    await advance(500 + delay * 2);
+    check(calls.length >= 2 && calls.every(call => call[2].command === command), `${buttonID} keeps its device-specific hold command and repeats`);
+    const count = calls.length;
+    pointer(document.body, 'pointercancel');
+    await advance(1000);
+    check(calls.length === count, `${buttonID} stops device-specific repeats on cancellation`);
+    idle(`${buttonID} releases device-specific hold resources`);
+  }
+
+  const definition = Object.freeze({ label: 'Cinema', action: 'light.turn_on', target: Object.freeze({ entity_id: 'light.cinema' }), data: Object.freeze({ brightness: 99 }) });
+  await configure({ custom_launchers: definition });
+  const custom = document.createElement('button');
+  custom.id = 'customlauncher Cinema-button';
+  custom.addEventListener('click', event => card.buttonDown(event));
+  card.shadowRoot.append(custom);
+  custom.click();
+  check(calls.length === 1 && calls[0][0] === 'light' && calls[0][1] === 'turn_on' && calls[0][2].entity_id === 'light.cinema' && calls[0][2].brightness === 99,
+    'singleton custom launcher accepts a label and action definition');
+  check(calls[0][2] !== definition.target && !('brightness' in definition.target), 'custom action arguments do not mutate or reuse configured target data');
+  custom.remove();
+  await configure({ button_overrides: { 'up-button': { service: 'light.turn_on', target: definition.target, data: definition.data } } });
+  pointer(target('up-button'), 'pointerdown');
+  check(calls.length === 1 && calls[0][1] === 'turn_on' && calls[0][2].brightness === 99, 'button overrides retain service and merged data support');
+  idle('immediate overrides do not allocate a hold timer or release listeners');
+
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, checks: assertions });
+} catch (error) {
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'failed', error: error.stack, assertions: assertions.length });
+} finally {
+  card._cancelButtonInteraction();
+  Object.assign(window, { setTimeout: native.setTimeout, clearTimeout: native.clearTimeout, setInterval: native.setInterval, clearInterval: native.clearInterval });
+  EventTarget.prototype.addEventListener = native.add;
+  EventTarget.prototype.removeEventListener = native.remove;
+  card.remove();
+}
+</script>

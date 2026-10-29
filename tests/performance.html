@@ -4,7 +4,7 @@
 <pre id="results">Running…</pre>
 <script type="module">
 import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
-import { devices } from '../dist/supported-devices.js';
+import { devices } from '../custom_components/firemote_apps/frontend/supported-devices.js';
 
 const results = document.querySelector('#results');
 const assertions = [];
@@ -63,6 +63,7 @@ try {
   const editor = await mount('firemote-card-editor');
   check(card.shadowRoot.querySelector('ha-card'), 'card mounts with real Lit rendering');
   check(editor.shadowRoot.querySelector('#app_launch_1').value === 'source:YouTube', 'initial launcher selection is retained');
+  check(/^Firemote frontend \d+\.\d+\.\d+$/.test(editor.shadowRoot.querySelector('.firemoteFrontendVersion').textContent), 'editor identifies the loaded frontend build');
   for (let i = 0; i < 100; i++) {
     const next = { ...hass, states: { ...hass.states, 'sensor.other': state('Sensor', String(i)) } };
     card.hass = next;
@@ -203,11 +204,20 @@ try {
   });
   check(loadedIcon.naturalWidth > 0 && !loadedIcon.hidden, 'device icon actually decodes and remains visible');
   const appNameLabel = iconButton.querySelector('.deviceAppName');
-  check(getComputedStyle(appNameLabel).display === 'none', 'rendered app button shows only the icon');
+  check(appNameLabel.hidden && getComputedStyle(appNameLabel).display === 'none', 'rendered app button hides its name in the markup and shows only the icon');
   loadedIcon.dispatchEvent(new Event('error'));
   check(loadedIcon.hidden && getComputedStyle(appNameLabel).display !== 'none', 'failed icon falls back to the app name');
   loadedIcon.dispatchEvent(new Event('load'));
   check(!loadedIcon.hidden && getComputedStyle(appNameLabel).display === 'none', 'recovered icon hides the fallback name again');
+  const iconConfig = discovered._config;
+  for (const style of ['AF6', 'AL1', 'AL2', 'CC1', 'AR1', 'NS2']) {
+    discovered.setConfig({ ...iconConfig, defaultRemoteStyle_override: style, scale_mode: 'viewport-width' });
+    await discovered.updateComplete;
+    const button = discovered.shadowRoot.querySelector('.srcButton:not(.hidden)');
+    check(button && getComputedStyle(button.querySelector('.deviceAppName')).display === 'none', `${style} shows icon-only app buttons with viewport scaling`);
+  }
+  discovered.setConfig(iconConfig);
+  await discovered.updateComplete;
   iconButton.click();
   check(calls.at(-1)[2].source === 'com.example.cinema', 'resolved names do not replace the package ID used for launching');
   discovered.setConfig({ ...discoveredEditor._config, app_launch_1: 'source:Cinema%20Room', app_launch_2: '' });

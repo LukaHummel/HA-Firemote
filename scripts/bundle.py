@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
-"""Bundle the shipped frontend with the integration; optionally build an install ZIP."""
+"""Stamp or check the integration's frontend version; optionally build an install ZIP."""
 
 import argparse
-import shutil
+import json
+import re
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "dist"
 COMPONENT = ROOT / "custom_components" / "firemote_apps"
-DESTINATION = COMPONENT / "frontend"
-
-
-def files(directory):
-    return {
-        path.relative_to(directory): path.read_bytes()
-        for path in directory.rglob("*")
-        if path.is_file()
-    }
+FRONTEND = COMPONENT / "frontend"
 
 
 def main():
@@ -25,18 +17,26 @@ def main():
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Fail if bundled frontend differs from dist",
+        help="Fail if the frontend version differs from manifest.json; do not modify it",
     )
     parser.add_argument("--zip", type=Path, help="Write one installable archive")
     args = parser.parse_args()
-    if args.check:
-        if files(SOURCE) != files(DESTINATION):
-            parser.exit(1, "Bundled frontend is stale. Run python3 scripts/bundle.py\n")
-    else:
-        shutil.copytree(SOURCE, DESTINATION, dirs_exist_ok=True)
-        for path in DESTINATION.rglob("*"):
-            if path.is_file() and not (SOURCE / path.relative_to(DESTINATION)).exists():
-                path.unlink()
+    version = json.loads((COMPONENT / "manifest.json").read_text())["version"]
+    entrypoint = FRONTEND / "HA-Firemote.js"
+    frontend = entrypoint.read_text()
+    stamped, declarations = re.subn(
+        r"const FiremoteFrontendVersion = '[^']+';",
+        f"const FiremoteFrontendVersion = '{version}';",
+        frontend,
+    )
+    if declarations != 1:
+        parser.exit(
+            1, "Expected one FiremoteFrontendVersion declaration in HA-Firemote.js\n"
+        )
+    if args.check and frontend != stamped:
+        parser.exit(1, "Frontend version is stale. Run python3 scripts/bundle.py\n")
+    if not args.check and frontend != stamped:
+        entrypoint.write_text(stamped)
     if args.zip:
         args.zip.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(args.zip, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -50,7 +50,7 @@ def main():
             archive.write(ROOT / "LICENSE", "LICENSE")
         print(args.zip.resolve())
     else:
-        print("Bundled frontend matches dist")
+        print("Frontend version matches manifest.json")
 
 
 if __name__ == "__main__":

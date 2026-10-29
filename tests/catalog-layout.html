@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Firemote catalog and layout regressions</title>
+<pre id="results">Running…</pre>
+<script type="module">
+import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
+import {appCatalogState, deviceApps, resolveDeviceApp, decodeSource} from '../custom_components/firemote_apps/frontend/app-catalog.js';
+
+const assertions = [];
+function check(condition, message) {
+  if (!condition) throw new Error(message);
+  assertions.push(message);
+}
+const catalog = (entity, apps = [], state = '2') => ({ state, attributes: { firemote_entity: entity, apps } });
+try {
+  const app = { id: 'com.example.tv', name: 'Cinema Room', icon: '/firemote/icons/cinema.png' };
+  const other = { id: 'Cinema Room', name: 'Another App' };
+  const sensor = catalog('media_player.adb', [null, {}, { id: '', name: 'Empty' }, app, other]);
+  let stateReads = 0;
+  const states = {
+    'sensor.apps': sensor,
+    get 'sensor.unrelated'() { stateReads++; return { state: 'on' }; },
+  };
+  const hass = { states, entities: {
+    'media_player.adb': { device_id: 'tv' },
+    'media_player.remote': { device_id: 'tv' },
+    'media_player.other': { device_id: 'another-tv' },
+  } };
+  const config = { entity: 'media_player.adb', device_family: 'amazon-fire' };
+  check(appCatalogState(hass, config) === sensor, 'exact ADB entity resolves its catalog');
+  check(appCatalogState(hass, { entity: 'media_player.remote' }) === sensor, 'a unique catalog matches the same device');
+  check(!appCatalogState(hass, { entity: 'media_player.other' }), 'catalogs from other devices remain isolated');
+  const apps = deviceApps(hass, config);
+  check(apps.length === 2 && apps[0] === app, 'invalid app records are ignored without losing icon metadata');
+  let reused = true;
+  for (let i = 0; i < 100; i++) {
+    reused &&= deviceApps(hass, config) === apps;
+    appCatalogState(hass, { entity: 'media_player.remote' });
+    resolveDeviceApp(apps, 'com.example.tv');
+  }
+  check(reused, 'multiple launcher slots reuse the same filtered app list');
+  check(stateReads === 1, 'multiple cards and launcher slots scan a state snapshot only once');
+  check(resolveDeviceApp(apps, 'Cinema Room') === other, 'package ID match takes precedence over another app display name');
+  check(resolveDeviceApp([app], 'Cinema Room') === app, 'old display-name selections still resolve');
+  check(resolveDeviceApp(null, 'missing') === undefined, 'missing catalogs have no app match');
+  check(resolveDeviceApp(apps, 'missing') === undefined, 'unknown selections do not match another app');
+
+  const moved = { ...hass, entities: { ...hass.entities, 'media_player.remote': { device_id: 'new-tv' } } };
+  check(!appCatalogState(moved, { entity: 'media_player.remote' }), 'registry replacement invalidates device associations');
+  const ambiguous = { ...hass, states: { ...states, 'sensor.duplicate': catalog('media_player.second') },
+    entities: { ...hass.entities, 'media_player.second': { device_id: 'tv' } } };
+  check(!appCatalogState(ambiguous, { entity: 'media_player.remote' }), 'ambiguous device catalogs are never chosen implicitly');
+  check(appCatalogState(ambiguous, config) === sensor, 'exact entity wins even when another catalog shares its device');
+  const replacement = catalog('media_player.adb', [{ ...app, name: 'Updated Cinema' }]);
+  const refreshed = { ...hass, states: { ...states, 'sensor.apps': replacement } };
+  check(resolveDeviceApp(deviceApps(refreshed, config), app.id).name === 'Updated Cinema', 'new state snapshots refresh app names');
+  check(deviceApps({ ...hass, states: { 'sensor.apps': { ...sensor, state: 'unavailable' } } }, config).length === 0,
+    'unavailable catalogs do not expose stale apps');
+  check(deviceApps({ states: {} }, config) === null, 'Android devices never substitute running processes for a catalog');
+  const roku = { states: { 'media_player.roku': { attributes: { source_list: ['Netflix', null, 'Netflix', ' ', 'Cinema'] } } } };
+  const rokuConfig = { entity: 'media_player.roku', device_family: 'roku' };
+  const rokuApps = deviceApps(roku, rokuConfig);
+  check(rokuApps.length === 2 && rokuApps[0].id === 'Netflix', 'native source lists filter invalid and duplicate entries');
+  check(deviceApps(roku, rokuConfig) === rokuApps, 'native source lists are cached by array identity');
+  check(decodeSource('source:Cinema%20Room') === 'Cinema Room', 'encoded selections decode normally');
+  check(decodeSource('source:%ZZ') === '%ZZ', 'malformed YAML escapes remain renderable');
+
+  const Card = customElements.get('firemote-card');
+  const card = new Card();
+  card.hass = { config: { language: 'en' }, states: {}, entities: {} };
+  const base = { entity: 'none', device_family: 'none', device_type: 'other' };
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AF5' });
+  check(card.getCardSize() === 16, 'Fire TV masonry height retains its established size');
+  check(card.getLayoutOptions().grid_rows === 12.25 && card.getLayoutOptions().grid_columns === 2,
+    'Sections dimensions retain their established values');
+  card.setConfig({ ...base, scale: 50, defaultRemoteStyle_override: 'AF5' });
+  check(card.getCardSize() === 8 && card.getLayoutOptions().grid_rows === 6.12, 'fixed percentage applies consistently to both layouts');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'HO1' });
+  check(card.getCardSize() === 15, 'Homatics remotes now report a masonry height');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'HO3' });
+  check(card.getCardSize() === 19, 'taller Homatics remotes report their own height');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'unknown' });
+  check(card.getCardSize() === undefined && Object.keys(card.getLayoutOptions()).length === 0,
+    'unknown styles leave dashboard sizing unspecified');
+  const stub = Card.getStubConfig({
+    entities: { 'remote.apple': { platform: 'apple_tv' }, 'media_player.apple': { platform: 'apple_tv' } },
+    states: { 'remote.apple': {}, 'media_player.apple': {} },
+  });
+  check(stub.entity === 'media_player.apple' && stub.device_family === 'apple-tv', 'stub config selects a media player rather than its remote');
+  check(Card.getStubConfig({}).entity === '', 'stub config handles an unavailable entity registry');
+
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL1' });
+  document.body.append(card);
+  await card.updateComplete;
+  check(card.shadowRoot.querySelectorAll('.srcButton').length === 6, 'empty launcher-only remotes do not create hundreds of hidden catalog buttons');
+  card.setConfig({ ...base, device_family: 'amazon-fire', defaultRemoteStyle_override: 'AL1', app_launch_1: 'source:%ZZ', app_launch_9: 'source:YouTube' });
+  await card.updateComplete;
+  check(card.shadowRoot.querySelectorAll('.srcButton').length === 9, 'sparse saved launcher slots determine the rendered slot count');
+  check([...card.shadowRoot.querySelectorAll('.srcButton')].some(button => button.textContent === '%ZZ'), 'malformed source escapes do not break card rendering');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL1', app_launch_1: 'customlauncher Cinema',
+    custom_launchers: { friendly_name: 'Cinema', label: '<b>Markup</b>', color: 'red', background: 'blue', script: 'cinema' } });
+  await card.updateComplete;
+  const custom = card.shadowRoot.getElementById('customlauncher Cinema-button');
+  check(custom.querySelector('.customLauncherTxt').textContent === '<b>Markup<', 'custom launcher labels render as literal text');
+  check(!custom.querySelector('b'), 'custom labels cannot inject markup into the remote');
+  check(custom.querySelector('.customLauncherTxt').style.color === 'red', 'custom launcher colors survive safe template rendering');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL1', app_launch_1: 'netflix' });
+  await card.updateComplete;
+  check(card.shadowRoot.getElementById('netflix-button').querySelector('svg'), 'legacy static app launchers retain their SVG artwork');
+  card.setConfig({ ...base, device_family: 'amazon-fire', device_type: 'fire_tv_4_series',
+    defaultRemoteStyle_override: 'AL1', app_launch_1: 'hdmi_1', hdmi_1: 123 });
+  await card.updateComplete;
+  check(card.shadowRoot.getElementById('hdmi_1-button').textContent.trim() === '123', 'numeric YAML input labels remain renderable');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL1', app_launch_1000000: 'source:YouTube' });
+  await card.updateComplete;
+  check(card.shadowRoot.querySelectorAll('.srcButton').length < 1000, 'malformed launcher indices cannot create an unbounded card DOM');
+  const editor = document.createElement('firemote-card-editor');
+  editor.hass = card.hass;
+  editor.setConfig({ ...base, device_family: 'amazon-fire', defaultRemoteStyle_override: 'AL1', app_launch_1000000: 'source:YouTube' });
+  document.body.append(editor);
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelectorAll('select[name^="app_launch_"]').length === card.shadowRoot.querySelectorAll('.srcButton').length,
+    'editor and card enforce the same launcher slot limit');
+  editor.remove();
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL2', app_launcher_relative_size: 0 });
+  await card.updateComplete;
+  const numericSize = getComputedStyle(card.shadowRoot.querySelector('.appLauncherAppsContainer')).getPropertyValue('--sz');
+  card.setConfig({ ...base, defaultRemoteStyle_override: 'AL2', app_launcher_relative_size: '0' });
+  await card.updateComplete;
+  check(getComputedStyle(card.shadowRoot.querySelector('.appLauncherAppsContainer')).getPropertyValue('--sz') === numericSize,
+    'resetting launcher size to string zero keeps the same scale as numeric zero');
+  card.remove();
+
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, checks: assertions });
+} catch (error) {
+  document.querySelector('#results').textContent = JSON.stringify({ status: 'failed', error: error.stack, checks: assertions });
+}
+</script>
