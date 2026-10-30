@@ -1,5 +1,5 @@
 const HAFiremoteVersion = 'v4.1.9';
-const FiremoteFrontendVersion = '0.2.5';
+const FiremoteFrontendVersion = '0.2.6';
 
 import {LitElement, html, css, unsafeHTML, styleMap, repeat} from './lit/lit-all.min.js';
 import {launcherData} from "./launcher-buttons.js?version=v4.1.9";
@@ -4215,6 +4215,17 @@ class FiremoteCardEditor extends LitElement {
         color: var(--primary-text-color, #111);
       }
       .editorDropdown option { padding: .5em .75em; }
+      .refreshAppCatalog {
+        margin-bottom: 1em;
+        padding: .6em .9em;
+        border: 1px solid var(--divider-color, #777);
+        border-radius: 4px;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-color, #03a9f4);
+        font: inherit;
+        cursor: pointer;
+      }
+      .refreshAppCatalog:disabled { opacity: .5; cursor: default; }
     `;
   }
 
@@ -4222,10 +4233,13 @@ class FiremoteCardEditor extends LitElement {
     return {
       hass: {},
       _config: {},
+      _refreshingCatalog: { state: true },
+      _catalogRefreshError: { state: true },
     };
   }
 
   shouldUpdate(changedProps) {
+    if (changedProps.has('_refreshingCatalog') || changedProps.has('_catalogRefreshError')) return true;
     if (changedProps.has('_config') || !changedProps.has('hass')) return true;
     const previous = changedProps.get('hass');
     if (!previous || !this.hass) return true;
@@ -4278,6 +4292,22 @@ class FiremoteCardEditor extends LitElement {
     this.dispatchEvent(new CustomEvent('config-changed', {
       detail: { config }, bubbles: true, composed: true,
     }));
+  }
+
+  async _refreshCatalog() {
+    // Read current hass here: unrelated state changes intentionally skip render.
+    const entityId = appCatalogState(this.hass, this._config)?.entity_id;
+    if (!entityId || this._refreshingCatalog) return;
+    this._refreshingCatalog = entityId;
+    this._catalogRefreshError = undefined;
+    try {
+      await this.hass.callService('homeassistant', 'update_entity', { entity_id: entityId });
+    } catch {
+      const catalog = appCatalogState(this.hass, this._config);
+      this._catalogRefreshError = catalog?.entity_id === entityId ? catalog : undefined;
+    } finally {
+      this._refreshingCatalog = undefined;
+    }
   }
 
   translateToUsrLang(englishString) {
@@ -4480,6 +4510,11 @@ class FiremoteCardEditor extends LitElement {
           : ['unavailable', 'unknown'].includes(catalog.state)
             ? 'The installed-app catalog is unavailable or still scanning. Check the Firemote integration and TV connection.'
             : `Using ${catalog.attributes.firemote_entity}: ${catalog.attributes.apps.length} installed apps. System apps ${catalog.attributes.include_system_apps === true ? 'included' : 'excluded'}.`}</p>
+        <button type="button" class="refreshAppCatalog" ?disabled=${!catalog?.entity_id || Boolean(this._refreshingCatalog)}
+          @click=${this._refreshCatalog}>${this._refreshingCatalog === catalog?.entity_id && this._refreshingCatalog
+            ? 'Refreshing app catalog…' : 'Refresh app catalog'}</button>
+        ${this._catalogRefreshError && this._catalogRefreshError === catalog
+          ? html`<p role="alert">Unable to refresh the app catalog. Check the TV connection and try again.</p>` : ''}
       ` : ''}
       ${Array.from({ length: count }, (_, index) => {
         const number = index + 1;

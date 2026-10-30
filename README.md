@@ -538,8 +538,10 @@ Apple TV app shortcuts work simply by passing the name of the app to the apple t
 
 For Android / Fire TV, check that the Firemote integration and card use the same
 ADB media player, then inspect the editor's catalog status. Enable **Include
-system apps** in the integration's options if the app is preinstalled. Refresh
-the catalog sensor with `homeassistant.update_entity` after installing an app.
+system apps** in the integration's options if the app is preinstalled. Select
+**Refresh app catalog** in the card editor to scan immediately, or call
+`homeassistant.update_entity` on the catalog sensor. The catalog also refreshes
+every five minutes and when the ADB media player reconnects after a restart.
 Only apps exposing a launcher activity are listed. An unavailable catalog must
 be restored before app choices can load; requesting a static shortcut is not
 required. See the [catalog troubleshooting guide](custom_components/firemote_apps/README.md#catalog-exists-but-the-card-lists-system-processes).

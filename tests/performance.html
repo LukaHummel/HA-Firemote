@@ -243,6 +243,29 @@ try {
     'sensor.firemote_apps': { ...catalogState, state: 'unavailable' } } };
   await discoveredEditor.updateComplete;
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'unavailable installed-app catalog does not substitute running apps');
+  discovered.hass = discoveredEditor.hass;
+  await discovered.updateComplete;
+  check(!discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').querySelector('img'),
+    'catalog outages stop displaying stale app artwork on the panel');
+  const restartedCatalogHass = { ...catalogHass, states: { ...catalogHass.states,
+    'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes,
+      apps: [{ id: 'com.example.cinema', name: 'Cinema after restart', icon: catalogState.attributes.apps[0].icon },
+        { id: 'com.example.new', name: 'Newly installed' }] } } } };
+  discovered.hass = restartedCatalogHass;
+  discoveredEditor.hass = restartedCatalogHass;
+  await Promise.all([discovered.updateComplete, discoveredEditor.updateComplete]);
+  check(discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').title === 'Cinema after restart' &&
+    discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').querySelector('img') &&
+    discoveredEditor.shadowRoot.querySelector('#app_launch_1').selectedOptions[0].textContent === 'Cinema after restart',
+    'card and editor automatically reconnect their saved app selections after catalog recovery');
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value="source:com.example.new"]'),
+    'newly installed apps appear in the editor when the catalog recovers');
+  discoveredEditor.hass = { ...restartedCatalogHass, states: { ...restartedCatalogHass.states,
+    'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes, apps: [] } } } };
+  await discoveredEditor.updateComplete;
+  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1 &&
+    discoveredEditor._config.app_launch_1 === 'source:com.example.cinema',
+    'uninstalled apps disappear from choices while saved launcher configuration survives');
   const withoutCatalog = { ...catalogHass, states: { ...catalogHass.states } };
   delete withoutCatalog.states['sensor.firemote_apps'];
   discoveredEditor.hass = withoutCatalog;

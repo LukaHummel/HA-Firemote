@@ -16,11 +16,23 @@ PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$")
 
 def package_list(output):
     """Accept only package-manager package lines, never shell fragments."""
-    return {
-        line[8:].strip()
-        for line in output.splitlines()
-        if line.startswith("package:") and PACKAGE.fullmatch(line[8:].strip())
-    }
+    return set(package_versions(output))
+
+
+def package_versions(output):
+    """Read optional version codes without treating pm output as shell input."""
+    packages = {}
+    for line in output.splitlines():
+        if not line.startswith("package:"):
+            continue
+        fields = line[8:].strip().split()
+        if not fields or not PACKAGE.fullmatch(fields[0]):
+            continue
+        if len(fields) == 1:
+            packages[fields[0]] = ""
+        elif len(fields) == 2 and re.fullmatch(r"versionCode:\d+", fields[1]):
+            packages[fields[0]] = fields[1]
+    return packages
 
 
 def launcher_list(output):
@@ -99,6 +111,7 @@ class AppCatalog:
         self.icon_dir = Path(icon_dir)
         self.url_prefix = url_prefix
         self.executor = executor
+        self._scan_lock = asyncio.Lock()
 
     def _load(self):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -122,9 +135,20 @@ class AppCatalog:
         return await asyncio.wait_for(device.adb_shell(command), timeout=30)
 
     async def scan(self, device, include_system_apps=False):
+        # Polls and explicit refreshes share the same cache and temporary filename.
+        async with self._scan_lock:
+            return await self._scan(device, include_system_apps)
+
+    async def _scan(self, device, include_system_apps):
+        package_command = "pm list packages" + ("" if include_system_apps else " -3")
         installed = await self._shell(
-            device, "pm list packages" + ("" if include_system_apps else " -3")
+            device, package_command + " --show-versioncode"
         )
+        if isinstance(installed, str) and re.search(
+            r"unknown (?:command|option)|error:", installed, re.IGNORECASE
+        ):
+            # Older Fire OS versions do not expose package version codes.
+            installed = await self._shell(device, package_command)
         if not isinstance(installed, str) or not (
             installed.strip().startswith("package:") or not installed.strip()
         ):
@@ -157,7 +181,8 @@ class AppCatalog:
             ):
                 raise RuntimeError("Device does not support launcher app queries")
             launchers.update(launcher_list(output))
-        packages = package_list(installed) & launchers
+        versions = package_versions(installed)
+        packages = versions.keys() & launchers
         previous = await self.executor(self._load)
         cache = {}
         apps = []
@@ -182,7 +207,10 @@ class AppCatalog:
                 apps.append(app)
                 continue
             fingerprint = sha256(
-                ("metadata-v3\n" + package + "\n" + "\n".join(paths)).encode()
+                (
+                    f"metadata-v4\n{package}\n{versions[package]}\n"
+                    + "\n".join(paths)
+                ).encode()
             ).hexdigest()
             icon_file = fingerprint + ".png"
             icon_path = self.icon_dir / icon_file
@@ -213,6 +241,8 @@ class AppCatalog:
                     _LOGGER.warning(
                         "Could not extract metadata for %s", package, exc_info=True
                     )
+                    # Keep the last good label/icon while retrying an updated APK.
+                    item = dict(previous.get(package, item))
                     # Retry failed extractions on the next refresh.
                     item.pop("fingerprint", None)
                 finally:

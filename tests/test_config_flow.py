@@ -2,6 +2,7 @@
 
 import importlib.util
 import unittest
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -22,7 +23,11 @@ if HAS_HA:
         FiremoteOptionsFlow,
     )
     from custom_components.firemote_apps.const import DOMAIN
-    from custom_components.firemote_apps.sensor import async_setup_entry as setup_sensor
+    from custom_components.firemote_apps.sensor import (
+        SCAN_INTERVAL,
+        FiremoteApps,
+        async_setup_entry as setup_sensor,
+    )
 
 
 @unittest.skipUnless(HAS_HA, "Install Home Assistant to run setup-flow tests")
@@ -161,3 +166,129 @@ class SetupFlowTests(unittest.IsolatedAsyncioTestCase):
             {route.url_path for route in routes},
             {"/firemote/frontend", "/firemote/icons"},
         )
+
+
+@unittest.skipUnless(HAS_HA, "Install Home Assistant to run sensor lifecycle tests")
+class SensorLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.hass = Mock()
+        self.hass.config.path.side_effect = lambda *parts: "/config/" + "/".join(parts)
+        self.sensor = FiremoteApps(self.hass, "media_player.tv", False)
+        self.sensor.async_schedule_update_ha_state = Mock()
+        self.sensor.async_write_ha_state = Mock()
+        self.device = SimpleNamespace(available=True)
+        self.adb_entry = SimpleNamespace(
+            domain="androidtv", runtime_data=SimpleNamespace(aftv=self.device)
+        )
+        self.hass.config_entries.async_get_entry.return_value = self.adb_entry
+        self.registry = Mock()
+        self.registry.async_get.return_value = SimpleNamespace(config_entry_id="adb")
+        registry_patch = patch(
+            "homeassistant.helpers.entity_registry.async_get", return_value=self.registry
+        )
+        registry_patch.start()
+        self.addCleanup(registry_patch.stop)
+        self.sensor.catalog.scan = AsyncMock(
+            return_value=[{"id": "com.example.app", "name": "Example"}]
+        )
+
+    def source_changed(self, old, new):
+        self.sensor._async_source_changed(
+            SimpleNamespace(
+                data={
+                    "old_state": SimpleNamespace(state=old) if old else None,
+                    "new_state": SimpleNamespace(state=new) if new else None,
+                }
+            )
+        )
+
+    async def test_offline_startup_refreshes_on_adb_recovery(self):
+        self.device.available = False
+        await self.sensor.async_update()
+        self.assertFalse(self.sensor.available)
+        self.sensor.catalog.scan.assert_not_awaited()
+        self.device.available = True
+        self.source_changed("unavailable", "idle")
+        self.sensor.async_schedule_update_ha_state.assert_called_once_with(
+            force_refresh=True
+        )
+        await self.sensor.async_update()
+        self.assertTrue(self.sensor.available)
+        self.assertEqual(self.sensor.native_value, 1)
+        self.assertEqual(
+            self.sensor.extra_state_attributes["firemote_entity"], "media_player.tv"
+        )
+
+    async def test_playback_updates_do_not_trigger_scans(self):
+        for old, new in (("idle", "playing"), ("playing", "paused"), ("off", "idle")):
+            self.source_changed(old, new)
+        self.sensor.async_schedule_update_ha_state.assert_not_called()
+
+    async def test_unavailable_source_hides_catalog_and_preserves_metadata(self):
+        await self.sensor.async_update()
+        apps = self.sensor.extra_state_attributes["apps"]
+        self.source_changed("idle", "unavailable")
+        self.assertFalse(self.sensor.available)
+        self.assertIs(self.sensor.extra_state_attributes["apps"], apps)
+        self.sensor.async_write_ha_state.assert_called_once()
+        self.source_changed("unavailable", "off")
+        self.sensor.async_schedule_update_ha_state.assert_called_once_with(
+            force_refresh=True
+        )
+
+    async def test_unknown_or_removed_source_can_recover(self):
+        for old in (None, "unknown"):
+            self.sensor.async_schedule_update_ha_state.reset_mock()
+            self.source_changed(old, "idle")
+            self.sensor.async_schedule_update_ha_state.assert_called_once_with(
+                force_refresh=True
+            )
+        self.source_changed("idle", None)
+        self.assertFalse(self.sensor.available)
+
+    async def test_listener_is_removed_on_unload_and_closes_startup_race(self):
+        self.hass.states.get.return_value = SimpleNamespace(state="idle")
+        unsubscribe = Mock()
+        with patch(
+            "custom_components.firemote_apps.sensor.async_track_state_change_event",
+            return_value=unsubscribe,
+        ) as track, patch.object(self.sensor, "async_on_remove") as on_remove:
+            await self.sensor.async_added_to_hass()
+        track.assert_called_once_with(
+            self.hass, ["media_player.tv"], self.sensor._async_source_changed
+        )
+        self.sensor.async_schedule_update_ha_state.assert_called_once_with(
+            force_refresh=True
+        )
+        on_remove.assert_called_once_with(unsubscribe)
+        on_remove.call_args.args[0]()
+        unsubscribe.assert_called_once()
+
+    async def test_periodic_and_manual_updates_publish_changed_app_lists(self):
+        self.assertEqual(SCAN_INTERVAL, timedelta(minutes=5))
+        await self.sensor.async_update()
+        replacement = [{"id": "com.example.new", "name": "New app"}]
+        self.sensor.catalog.scan.return_value = replacement
+        await self.sensor.async_update()
+        self.assertIs(self.sensor.extra_state_attributes["apps"], replacement)
+        self.sensor.catalog.scan.assert_awaited_with(self.device, False)
+
+    async def test_scan_failure_recovers_on_next_refresh(self):
+        await self.sensor.async_update()
+        self.sensor.catalog.scan.side_effect = RuntimeError("offline")
+        with self.assertLogs("custom_components.firemote_apps.sensor", level="WARNING"):
+            await self.sensor.async_update()
+        self.assertFalse(self.sensor.available)
+        self.assertEqual(self.sensor.extra_state_attributes["apps"][0]["name"], "Example")
+        self.sensor.catalog.scan.side_effect = None
+        await self.sensor.async_update()
+        self.assertTrue(self.sensor.available)
+
+    async def test_disconnect_during_scan_does_not_publish_available(self):
+        async def disconnect(*args):
+            self.device.available = False
+            return []
+
+        self.sensor.catalog.scan.side_effect = disconnect
+        await self.sensor.async_update()
+        self.assertFalse(self.sensor.available)

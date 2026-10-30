@@ -16,14 +16,16 @@ node tests/run.mjs commands.html
 
 These cover shared catalog indexes and invalidation, saved launcher compatibility,
 layout sizing, safe custom labels, editor selections and render immutability,
-and click/hold cancellation and device command dispatch. The command tests use
+manual catalog refresh and recovery after restart, and click/hold cancellation
+and device command dispatch. The command tests use
 controlled timers so they can check repeated holds and cleanup without sending
 commands to a real device.
 
 Run `python3 -m unittest discover -s tests -p 'test_*.py'` for companion backend
 catalog tests. These use a mocked ADB transport and APK extractor to verify
 system-app filtering, launcher filtering, display names, caching across restarts,
-package updates/removal, failed extraction retries, and transport failures. No
+package installs/updates/removal, in-place version changes, failed extraction
+retries, concurrent refreshes, and transport failures. No
 Home Assistant or third-party Python dependencies are needed for these tests.
 
 The companion's real APK extractor additionally requires its manifest dependencies.
@@ -49,7 +51,8 @@ python3 -m venv /tmp/firemote-ha-tests
 
 These exercise the real config-flow classes with mocked registries and entry
 managers, covering ADB-only choices, system-app defaults, duplicate prevention,
-YAML import, per-TV options, setup retries, platform forwarding and removal.
+YAML import, per-TV options, setup retries, platform forwarding and removal,
+catalog recovery after ADB reconnects, and sensor refresh/listener cleanup.
 The dependency-free suite skips these tests; CI runs them separately with Home
 Assistant installed. They do not connect to a TV.
 

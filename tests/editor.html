@@ -169,6 +169,57 @@ try {
     'malformed legacy source escapes resolve safely to the matching package');
   check(editor.shadowRoot.querySelector('#app_launch_1 option[value="source:%25ZZ"]').textContent === 'Malformed escape & <name>',
     'app labels remain literal text after safe source resolution');
+
+  const refreshCalls = [];
+  const refreshCatalog = { entity_id: 'sensor.firemote_android_apps', state: 'unavailable', attributes: {
+    firemote_entity: config.entity, apps: []
+  } };
+  const refreshHass = { ...hass, entities: { ...entities,
+    [config.entity]: { ...entities[config.entity], device_id: 'tv' },
+    'media_player.other': { platform: 'androidtv_remote', device_id: 'tv' },
+  }, states: { ...states, 'media_player.other': state('TV remote'), [refreshCatalog.entity_id]: refreshCatalog },
+    callService() { throw new Error('Stale hass must not handle refresh'); } };
+  editor.setConfig({ ...config, entity: 'media_player.other' });
+  editor.hass = refreshHass;
+  await editor.updateComplete;
+  const refreshButton = editor.shadowRoot.querySelector('.refreshAppCatalog');
+  check(refreshButton && !refreshButton.disabled, 'an unavailable catalog can be manually retried');
+  let finishRefresh;
+  editor.hass = { ...refreshHass, states: { ...refreshHass.states, 'sensor.unrelated': { state: 'on' } },
+    callService(...args) { refreshCalls.push(args); return new Promise(resolve => { finishRefresh = resolve; }); } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('.refreshAppCatalog') === refreshButton,
+    'unrelated state updates preserve the existing refresh button');
+  const beforeRefreshEvents = events;
+  refreshButton.click();
+  refreshButton.click();
+  await editor.updateComplete;
+  check(refreshCalls.length === 1 && refreshCalls[0][0] === 'homeassistant' && refreshCalls[0][1] === 'update_entity' &&
+    refreshCalls[0][2].entity_id === refreshCatalog.entity_id,
+    'refresh uses latest hass and targets the catalog sensor matched through its TV device');
+  check(refreshButton.disabled && refreshButton.textContent.includes('Refreshing'),
+    'refresh shows progress and prevents duplicate requests');
+  finishRefresh();
+  await Promise.resolve();
+  await editor.updateComplete;
+  check(!refreshButton.disabled && events === beforeRefreshEvents,
+    'completed refresh re-enables the button without changing card configuration');
+  editor.hass = { ...editor.hass, callService: async () => { throw new Error('Connection failed'); } };
+  await editor._refreshCatalog();
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('[role="alert"]')?.textContent.includes('Unable to refresh') && !refreshButton.disabled,
+    'failed refresh reports the problem and allows another attempt');
+  editor.hass = { ...editor.hass, states: { ...editor.hass.states,
+    [refreshCatalog.entity_id]: { ...refreshCatalog, state: '1', attributes: {
+      ...refreshCatalog.attributes, apps: [{ id: 'com.example.new', name: 'New app' }]
+    } } } };
+  await editor.updateComplete;
+  check(!editor.shadowRoot.querySelector('[role="alert"]'),
+    'a later catalog update clears stale manual refresh error feedback');
+  editor.hass = { ...refreshHass, states: { ...states, 'media_player.other': state('TV remote') } };
+  await editor.updateComplete;
+  check(editor.shadowRoot.querySelector('.refreshAppCatalog').disabled && !editor.shadowRoot.querySelector('[role="alert"]'),
+    'a missing catalog disables refresh without leaving an error from another sensor');
   editor.setConfig({ ...config, device_family: 'unknown-family' });
   Object.freeze(editor._config);
   await editor.updateComplete;

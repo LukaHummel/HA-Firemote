@@ -76,10 +76,15 @@ copy or compilation step is needed. After changing the version in
 marker. CI runs `python3 scripts/bundle.py --check` to verify the versions match.
 
 Each device gets a sensor named `Firemote apps <entity name>`. Discovery refreshes
-every six hours. Use `homeassistant.update_entity` on that sensor to refresh after
-installing or removing apps. Unreachable devices mark the sensor unavailable;
-the card does not substitute a running-app list for an unavailable installed-app
-catalog.
+every five minutes and when the ADB media player becomes available again,
+including after a Home Assistant restart. Installed, removed, and updated apps
+appear after the next successful scan. Open the card editor and select
+**Refresh app catalog** to scan immediately, or call `homeassistant.update_entity`
+on the catalog sensor from **Developer Tools → Actions**. The refresh button also
+works when a matched catalog is unavailable, so you can retry after reconnecting
+the TV. The first scan or a scan with many updated apps may take several minutes.
+Unreachable devices mark the sensor unavailable; the card does not substitute a
+running-app list for an unavailable installed-app catalog.
 
 ## Filtering and caching
 
@@ -90,10 +95,13 @@ in the integration's **Configure** options to include them. Each TV has its own
 setting, and changes reload that TV's catalog automatically.
 
 APK files are downloaded one at a time to temporary storage and deleted after
-extraction. Labels and APK path fingerprints are cached under
-`/config/.storage/firemote_apps/`. Normal package updates change the APK paths and
-trigger extraction again. To force re-extraction after an in-place APK change,
-stop Home Assistant, remove that cache directory, and restart.
+extraction. Labels, package versions, and APK path fingerprints are cached under
+`/config/.storage/firemote_apps/`. Package version or APK path changes trigger
+extraction again. Older Fire OS versions that cannot report package versions use
+APK paths alone. If extraction temporarily fails, the last cached name and icon
+are retained and extraction is retried on the next refresh. To force re-extraction
+after changing an APK without changing its path or version, stop Home Assistant,
+remove that cache directory, and restart.
 
 Icons are normalized to PNG, at most 192 × 192 pixels, under
 `/config/www/firemote_apps/` and served through the integration’s explicitly

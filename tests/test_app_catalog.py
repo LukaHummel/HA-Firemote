@@ -25,6 +25,8 @@ class Device:
         self.pulls = 0
         self.commands = []
         self.version = "v1"
+        self.version_code = 1
+        self.hidden_packages = set()
         self.fail = False
 
     async def adb_shell(self, command):
@@ -34,12 +36,19 @@ class Device:
         if command.startswith("pm list packages"):
             return "\n".join(
                 "package:" + p
+                + (
+                    f" versionCode:{self.version_code}"
+                    if "--show-versioncode" in command
+                    else ""
+                )
                 for p in self.packages
-                if not (command.endswith(" -3") and p.endswith("system"))
+                if not ("-3" in command.split() and p.endswith("system"))
             )
         if "query-activities" in command:
             return "\n".join(
-                p + "/.MainActivity" for p in self.packages if not p.endswith("service")
+                p + "/.MainActivity"
+                for p in self.packages
+                if not p.endswith("service") and p not in self.hidden_packages
             )
         package = command.split()[-1]
         return f"package:/data/app/{self.version}/{package}/base.apk"
@@ -104,6 +113,83 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("icon", result[0])
         self.assertEqual(self.device.pulls, 2)
 
+    async def test_update_at_same_apk_path_refreshes_metadata_and_icon(self):
+        original = await self.catalog.scan(self.device)
+        self.device.version_code += 1
+
+        def updated_metadata(local, package, icon):
+            metadata(local, package, icon)
+            return "Cinema updated"
+
+        with patch.object(apps, "extract_metadata", side_effect=updated_metadata):
+            result = await self.catalog.scan(self.device)
+        self.assertEqual(result[0]["name"], "Cinema updated")
+        self.assertNotEqual(result[0]["icon"], original[0]["icon"])
+        self.assertEqual(self.device.pulls, 2)
+        self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
+
+    async def test_install_and_launcher_changes_are_reflected(self):
+        await self.catalog.scan(self.device)
+        self.device.packages.append("com.example.newapp")
+        result = await self.catalog.scan(self.device)
+        self.assertEqual(
+            {item["id"] for item in result},
+            {"com.example.cinema", "com.example.newapp"},
+        )
+        self.device.hidden_packages.add("com.example.cinema")
+        result = await self.catalog.scan(self.device)
+        self.assertEqual([item["id"] for item in result], ["com.example.newapp"])
+
+    async def test_older_device_without_version_codes(self):
+        original = self.device.adb_shell
+
+        async def shell(command):
+            if "--show-versioncode" in command:
+                return "Error: Unknown option: --show-versioncode"
+            return await original(command)
+
+        self.device.adb_shell = shell
+        result = await self.catalog.scan(self.device)
+        self.assertEqual([item["id"] for item in result], ["com.example.cinema"])
+        self.assertIn("pm list packages -3", self.device.commands)
+
+    async def test_failed_update_extraction_preserves_metadata_and_retries(self):
+        original = await self.catalog.scan(self.device)
+        self.device.version_code += 1
+        with (
+            self.assertLogs(apps._LOGGER, level="WARNING"),
+            patch.object(apps, "extract_metadata", side_effect=ValueError("bad APK")),
+        ):
+            self.assertEqual(await self.catalog.scan(self.device), original)
+        result = await self.catalog.scan(self.device)
+        self.assertEqual(result[0]["name"], "Cinema")
+        self.assertNotEqual(result[0]["icon"], original[0]["icon"])
+        self.assertEqual(self.device.pulls, 3)
+
+    async def test_concurrent_refreshes_share_one_serial_cache(self):
+        original = self.device.adb_shell
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def shell(command):
+            calls.append(command)
+            if len(calls) == 1:
+                started.set()
+                await release.wait()
+            return await original(command)
+
+        self.device.adb_shell = shell
+        first = asyncio.create_task(self.catalog.scan(self.device))
+        await started.wait()
+        second = asyncio.create_task(self.catalog.scan(self.device))
+        await asyncio.sleep(0)
+        self.assertEqual(len(calls), 1)
+        release.set()
+        results = await asyncio.gather(first, second)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.device.pulls, 1)
+
     async def test_older_device_query_fallback(self):
         original = self.device.adb_shell
 
@@ -154,6 +240,13 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
                 "2 activities found:\ncom.good.app/.Main\ncom.bad;sh/.Main"
             ),
             {"com.good.app"},
+        )
+        self.assertEqual(
+            apps.package_versions(
+                "package:com.good.app versionCode:42\n"
+                "package:com.bad.app versionCode:1;touch /tmp/x"
+            ),
+            {"com.good.app": "versionCode:42"},
         )
 
 

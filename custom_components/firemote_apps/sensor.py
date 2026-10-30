@@ -5,12 +5,15 @@ from datetime import timedelta
 from hashlib import sha256
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .apps import AppCatalog
 from .const import CONF_ENTITY, CONF_INCLUDE_SYSTEM
 
-SCAN_INTERVAL = timedelta(hours=6)
+SCAN_INTERVAL = timedelta(minutes=5)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -58,6 +61,36 @@ class FiremoteApps(SensorEntity):
             "include_system_apps": self.include_system_apps,
         }
 
+    async def async_added_to_hass(self):
+        """Refresh as soon as the shared ADB connection recovers."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, [self.source], self._async_source_changed
+            )
+        )
+        # The first scan runs before the entity is added. ADB may have recovered
+        # during that scan, before our state listener was registered.
+        source = self.hass.states.get(self.source)
+        if not self.available and self._source_available(source):
+            self.async_schedule_update_ha_state(force_refresh=True)
+
+    @staticmethod
+    def _source_available(state):
+        return state is not None and state.state not in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+        )
+
+    @callback
+    def _async_source_changed(self, event):
+        """Handle connection changes without scanning on playback updates."""
+        if not self._source_available(event.data.get("new_state")):
+            self._attr_available = False
+            self.async_write_ha_state()
+        elif not self._source_available(event.data.get("old_state")):
+            self.async_schedule_update_ha_state(force_refresh=True)
+
     async def async_update(self):
         entry = er.async_get(self.hass).async_get(self.source)
         config_entry = (
@@ -84,4 +117,4 @@ class FiremoteApps(SensorEntity):
             )
             return
         self._attr_native_value = len(self._apps)
-        self._attr_available = True
+        self._attr_available = device.available
