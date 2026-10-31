@@ -3,12 +3,18 @@
 import asyncio
 import importlib.util
 import tempfile
+import sys
+from types import ModuleType
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+PACKAGE_PATH = Path(__file__).parents[1] / "custom_components/firemote_apps"
+PACKAGE_MODULE = ModuleType("firemote_app_catalog")
+PACKAGE_MODULE.__path__ = [str(PACKAGE_PATH)]
+sys.modules[PACKAGE_MODULE.__name__] = PACKAGE_MODULE
 SPEC = importlib.util.spec_from_file_location(
-    "firemote_app_catalog",
+    "firemote_app_catalog.apps",
     Path(__file__).parents[1] / "custom_components/firemote_apps/apps.py",
 )
 apps = importlib.util.module_from_spec(SPEC)
@@ -104,6 +110,24 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.device.packages = []
         self.assertEqual(await catalog.scan(self.device), [])
         self.assertEqual(list((self.root / "icons").glob("*.png")), [])
+
+    async def test_old_metadata_cache_is_refreshed(self):
+        from hashlib import sha256
+
+        await self.catalog.scan(self.device)
+        cache = self.catalog._load()
+        item = cache["com.example.cinema"]
+        item["name"] = "Wrong resource string"
+        item["fingerprint"] = sha256(
+            b"metadata-v4\ncom.example.cinema\nversionCode:1\n"
+            b"/data/app/v1/com.example.cinema/base.apk"
+        ).hexdigest()
+        self.catalog._save(cache)
+        result = await self.catalog.scan(self.device)
+        self.assertEqual(result[0]["name"], "Cinema")
+        self.assertEqual(self.device.pulls, 2)
+        await self.catalog.scan(self.device)
+        self.assertEqual(self.device.pulls, 2)
 
     async def test_missing_cached_icon_is_extracted_again(self):
         await self.catalog.scan(self.device)
@@ -265,14 +289,11 @@ class ExtractionTests(unittest.TestCase):
             def __init__(self, _):
                 pass
 
-            def get_app_name(self):
-                return "Prime Video"
-
             def get_app_icon(self, max_dpi):
                 return icons.get(max_dpi)
 
             def get_attribute_value(self, _, attribute):
-                return attributes.get(attribute)
+                return attributes.get(attribute, "Prime Video" if attribute == "label" else None)
 
             def get_android_resources(self):
                 return SimpleNamespace(get_resolved_res_configs=lambda _: resources)
@@ -315,6 +336,24 @@ class ExtractionTests(unittest.TestCase):
             icon = Path(temp) / "icon.png"
             name = apps.extract_metadata("fixture.apk", "com.amazon.video", icon)
             return name, icon.is_file()
+
+    def test_sparse_apk_label(self):
+        from test_apk_resources import table
+
+        self.assertEqual(
+            self.extract({}, attributes={"label": "@7F13001E"},
+                         files={"resources.arsc": table()}),
+            ("Stremio", False),
+        )
+
+    def test_unresolved_label_uses_package_id(self):
+        for label in ("@7f13001d", "@android:01040000", "@string/missing"):
+            with self.subTest(label=label):
+                self.assertEqual(
+                    self.extract({}, attributes={"label": label},
+                                 files={"resources.arsc": b"invalid"}),
+                    ("com.amazon.video", False),
+                )
 
     def test_nodpi_icon_is_not_excluded(self):
         self.assertEqual(

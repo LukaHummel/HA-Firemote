@@ -40,6 +40,7 @@ class BundleTests(unittest.TestCase):
                     "__init__.py",
                     "sensor.py",
                     "apps.py",
+                    "apk_resources.py",
                     "manifest.json",
                     "README.md",
                     "frontend/HA-Firemote.js",

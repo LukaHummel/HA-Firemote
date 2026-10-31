@@ -25,7 +25,8 @@ Run `python3 -m unittest discover -s tests -p 'test_*.py'` for companion backend
 catalog tests. These use a mocked ADB transport and APK extractor to verify
 system-app filtering, launcher filtering, display names, caching across restarts,
 package installs/updates/removal, in-place version changes, failed extraction
-retries, concurrent refreshes, and transport failures. No
+retries, concurrent refreshes, and transport failures. Synthetic resource tables also test
+sparse and dense APK label resolution, compact entries, and string encodings. No
 Home Assistant or third-party Python dependencies are needed for these tests.
 
 The companion's real APK extractor additionally requires its manifest dependencies.

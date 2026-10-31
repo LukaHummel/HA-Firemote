@@ -9,6 +9,9 @@ import tempfile
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from struct import error as StructError
+
+from .apk_resources import resolve_string
 
 _LOGGER = logging.getLogger(__name__)
 PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$")
@@ -50,9 +53,24 @@ def extract_metadata(apk_path, package, icon_path):
     from pyaxmlparser import APK
 
     apk = APK(str(apk_path))
-    name = apk.get_app_name() or package
+    label = apk.get_attribute_value("application", "label")
+    if label is None:
+        activity = apk.get_main_activity()
+        label = (
+            apk.get_attribute_value("activity", "label", name=activity)
+            if activity else None
+        )
+    name = label or package
     if name.startswith("@"):
         name = package
+        try:
+            reference = label[1:].split(":")
+            if len(reference) == 1 or reference[0] == package:
+                name = resolve_string(
+                    apk.get_file("resources.arsc"), int(reference[-1], 16)
+                ) or package
+        except (ValueError, IndexError, StopIteration, StructError, KeyError, TypeError):
+            _LOGGER.debug("Could not resolve app label for %s", package, exc_info=True)
     candidates = []
     # First prefer legacy bitmap densities, then include nodpi and adaptive icons.
     for density in (65533, 65536):
@@ -208,7 +226,7 @@ class AppCatalog:
                 continue
             fingerprint = sha256(
                 (
-                    f"metadata-v4\n{package}\n{versions[package]}\n"
+                    f"metadata-v5\n{package}\n{versions[package]}\n"
                     + "\n".join(paths)
                 ).encode()
             ).hexdigest()
