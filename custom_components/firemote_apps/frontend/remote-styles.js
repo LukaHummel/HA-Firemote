@@ -7,6 +7,7 @@ export const remoteStyles = css`
           }
 
           .viewport-scale-frame {
+            box-sizing: content-box;
             display: flex;
             width: 100%;
           }

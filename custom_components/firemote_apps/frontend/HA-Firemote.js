@@ -7,7 +7,7 @@ import {rosettaStone} from './language-translations.js?version=v4.1.9';
 import {devices} from './supported-devices.js?version=v4.1.9';
 import {remoteStyles} from './remote-styles.js';
 import {appCatalogState, deviceApps, resolveDeviceApp, decodeSource} from './app-catalog.js';
-import {remoteDimensions, calculateLayoutCellHeight, calculateLayoutCellWidth, calculateMasonryViewHeight} from './remote-layouts.js';
+import {remoteDimensions, calculateLayoutCellHeight, calculateLayoutCellWidth, calculateMasonryViewHeight, unscrolledTop} from './remote-layouts.js';
 
 console.groupCollapsed("%c 🔥 FIREMOTE-CARD 🔥 %c "+HAFiremoteVersion+" installed ", "color: orange; font-weight: bold; background: black", "color: green; font-weight: bold;"),
 console.log("Readme:", "https://github.com/PRProd/HA-Firemote"),
@@ -281,13 +281,16 @@ class FiremoteCard extends LitElement {
     const style = getComputedStyle(view);
     const padding = side => parseFloat(style[side]) || 0;
     const headerBottom = this._dashboardHeader?.getBoundingClientRect().bottom || top;
+    const contentTop = Math.max(top, headerBottom, unscrolledTop(view) + padding('paddingTop'));
+    const contentBottom = bottom - padding('paddingBottom');
     return {
+      top: contentTop,
+      bottom: contentBottom,
       width: Math.max(0, Math.min(right, bounds.right - padding('paddingRight')) -
         Math.max(left, bounds.left + padding('paddingLeft'))),
       // View height can grow with the remote. Use the visible screen's bottom
       // to avoid feeding the card's own height back into its scale calculation.
-      height: Math.max(0, bottom - Math.max(top, headerBottom,
-        bounds.top + padding('paddingTop')) - padding('paddingBottom')),
+      height: Math.max(0, contentBottom - contentTop),
     };
   }
 
@@ -301,17 +304,31 @@ class FiremoteCard extends LitElement {
     const height = parseFloat(style.height);
     const byHeight = this._config.scale_mode === 'viewport-height';
     const dashboard = this._visibleDashboardSize();
-    const viewport = byHeight ? dashboard.height : dashboard.width;
+    const frame = content.parentElement.parentElement;
+    // A header can overlay the view instead of having matching top padding.
+    // Reserve that clearance in normal flow, and subtract any space already
+    // used above the card. Never use the frame's growing height as an input.
+    const frameTop = this._dashboardView ? unscrolledTop(frame) : 0;
+    const topClearance = this._dashboardView ? Math.max(0, dashboard.top - frameTop) : 0;
+    const availableHeight = this._dashboardView ?
+      Math.max(0, dashboard.bottom - Math.max(dashboard.top, frameTop)) : dashboard.height;
+    const viewport = byHeight ? availableHeight : dashboard.width;
     const percentage = parseFloat(this._config.scale) || 100;
-    const factor = viewport * percentage / 100 / (byHeight ? height : width);
+    const requestedFactor = viewport * percentage / 100 / (byHeight ? height : width);
+    // At normal percentages the complete remote must fit below the header,
+    // even when filling its selected dimension would overflow the other one.
+    // Explicit oversizing above 100% retains the scrollable layout.
+    const otherFactor = byHeight ? dashboard.width / width : availableHeight / height;
+    const factor = percentage <= 100 ? Math.min(requestedFactor, otherFactor) : requestedFactor;
     if (!(width > 0 && height > 0 && factor > 0 && Number.isFinite(factor))) return;
     this._scaledSize = { width: width * factor, height: height * factor };
     content.style.transform = `scale(${factor})`;
     const container = content.parentElement;
     container.style.width = `${this._scaledSize.width}px`;
     container.style.height = `${this._scaledSize.height}px`;
-    container.parentElement.style.minHeight = `${dashboard.height}px`;
-    this._scaleLayoutHeight = Math.max(dashboard.height, this._scaledSize.height);
+    frame.style.paddingTop = `${topClearance}px`;
+    frame.style.minHeight = `${availableHeight}px`;
+    this._scaleLayoutHeight = topClearance + Math.max(availableHeight, this._scaledSize.height);
   }
 
   // Sets a default card size (height) for masonry dashboard type

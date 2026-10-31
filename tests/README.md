@@ -4,7 +4,7 @@ The tests load the integration’s bundled modules and bundled Lit in headless C
 
 These tests do not connect to Home Assistant or send commands to real devices.
 
-Run `node tests/run-viewport-scaling.mjs` for viewport height and width scaling checks, proportions across seven remote styles, launcher rows, resize handling, switching modes, editor configuration, and disconnect/reconnect cleanup. The same Chromium setup applies.
+Run `node tests/run-viewport-scaling.mjs` for viewport height and width scaling checks, proportions across seven remote styles, launcher rows, resize handling, switching modes, editor configuration, and disconnect/reconnect cleanup. They also cover overlapping headers, card offsets, restored scroll positions, and fitting both dimensions at 100% or below. The same Chromium setup applies.
 
 Additional frontend regressions use the same runner:
 

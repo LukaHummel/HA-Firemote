@@ -47,3 +47,16 @@ export function calculateLayoutCellWidth(width, scale) {
 export function calculateMasonryViewHeight(height, scale) {
   return Math.ceil((height / 50) * (scale / 100));
 }
+
+// Normal layout position, independent of restored dashboard/document scrolling.
+// Shadow boundaries and fixed dashboard shells must retain their own origins.
+export function unscrolledTop(element) {
+  let top = element.getBoundingClientRect().top;
+  let ancestor = element;
+  while (ancestor) {
+    if (getComputedStyle(ancestor).position === 'fixed') break;
+    ancestor = ancestor.parentElement || ancestor.getRootNode().host;
+    if (ancestor) top += ancestor.scrollTop;
+  }
+  return top;
+}
