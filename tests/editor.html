@@ -112,8 +112,18 @@ try {
       `Escape closes the correct menu and restores focus: ${select.name}`);
   }
   const appSelect = editor.shadowRoot.querySelector('#app_launch_1');
-  check(appSelect.value === 'source:package.59' && appSelect.options.length === 61,
+  check(appSelect.value === 'source:package.59' && [...appSelect.options].filter(option => option.value.startsWith('source:')).length === 60,
     'long app lists retain saved selections and all choices');
+  check(appSelect.querySelector('option[value="function-app-manage"]') &&
+    appSelect.querySelector('option[value="hdmi_1"]') &&
+    !appSelect.querySelector('option[value="function-control-center"]'),
+    'app choices include supported system and input shortcuts, filtering other platforms');
+  appSelect.value = 'function-app-manage';
+  const beforeShortcut = events;
+  appSelect.dispatchEvent(new Event('change'));
+  await editor.updateComplete;
+  check(events === beforeShortcut + 1 && emitted.app_launch_1 === 'function-app-manage',
+    'system shortcut selection saves its existing command ID with one event');
   const appMenu = appSelect.closest('details');
   appMenu.open = true;
   check(appSelect.scrollHeight > appSelect.clientHeight, 'long app list scrolls internally');

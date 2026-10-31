@@ -112,10 +112,10 @@ try {
   editor.setConfig({ ...config, custom_launchers: [{ label: 'Cinema', script: 'cinema' }], app_launch_1: 'customlauncher Cinema' });
   await editor.updateComplete;
   const other = await mount('firemote-card-editor', { ...config, custom_launchers: [{ label: 'Music', script: 'music' }] });
-  check(!other.shadowRoot.querySelector('option[value="customlauncher Music"]') && !editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'custom launchers are excluded from device app choices');
+  check(other.shadowRoot.querySelector('option[value="customlauncher Music"]') && editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]') && !other.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'custom launcher choices remain isolated between editor configurations');
   editor.hass = { ...hass, config: { language: 'fr' } };
   await editor.updateComplete;
-  check(!editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'language updates do not reintroduce custom options');
+  check(editor.shadowRoot.querySelector('option[value="customlauncher Cinema"]'), 'language updates retain custom options');
   editor.setConfig({ ...config, defaultRemoteStyle_override: 'CC1' });
   await editor.updateComplete;
   const media = editor.shadowRoot.querySelector('#showMediaControlsCheckbox');
@@ -165,9 +165,9 @@ try {
   const discovered = await mount('firemote-card', discoveredConfig, discoveredHass);
   const discoveredEditor = await mount('firemote-card-editor', discoveredConfig, discoveredHass);
   const choices = discoveredEditor.shadowRoot.querySelector('#app_launch_1');
-  check(choices.options.length === 3 && choices.options[1].textContent === 'Unknown & <App>', 'dropdown offers unique device apps with safely rendered labels');
+  check([...choices.options].filter(option => option.value.startsWith('source:')).length === 2 && choices.options[1].textContent === 'Unknown & <App>', 'dropdown offers unique device apps with safely rendered labels');
   check(![...discovered.shadowRoot.querySelectorAll('.srcButton')].some(button => button.textContent === 'Unknown & <App>'), 'discovered apps do not appear on the remote before selection');
-  check(!choices.querySelector('option[value="netflix"]') && !choices.querySelector('option[value="customlauncher Legacy"]'), 'saved hardcoded and custom options are excluded');
+  check(!choices.querySelector('option[value="netflix"]') && choices.querySelector('option[value="customlauncher Legacy"]'), 'static apps stay excluded while configured custom launchers are offered');
   check(!choices.querySelector('option[value="youtube"]'), 'static catalog is not offered in app choices');
   choices.value = 'source:' + encodeURIComponent('Unknown & <App>');
   choices.dispatchEvent(new Event('change'));
@@ -188,7 +188,7 @@ try {
   discoveredEditor.hass = catalogHass;
   await discoveredEditor.updateComplete;
   const appSelect = discoveredEditor.shadowRoot.querySelector('#app_launch_1');
-  check(appSelect.options.length === 2 && appSelect.options[1].textContent === 'Cinema Room', 'companion catalog replaces raw sources with installed app display names');
+  check([...appSelect.options].filter(option => option.value.startsWith('source:')).length === 1 && appSelect.options[1].textContent === 'Cinema Room', 'companion catalog replaces raw sources with installed app display names');
   appSelect.value = 'source:com.example.cinema';
   appSelect.dispatchEvent(new Event('change'));
   await discoveredEditor.updateComplete;
@@ -242,7 +242,7 @@ try {
   discoveredEditor.hass = { ...catalogHass, states: { ...catalogHass.states,
     'sensor.firemote_apps': { ...catalogState, state: 'unavailable' } } };
   await discoveredEditor.updateComplete;
-  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'unavailable installed-app catalog does not substitute running apps');
+  check(!discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value^="source:"]'), 'unavailable installed-app catalog does not substitute running apps');
   discovered.hass = discoveredEditor.hass;
   await discovered.updateComplete;
   check(!discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').querySelector('img'),
@@ -263,14 +263,14 @@ try {
   discoveredEditor.hass = { ...restartedCatalogHass, states: { ...restartedCatalogHass.states,
     'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes, apps: [] } } } };
   await discoveredEditor.updateComplete;
-  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1 &&
+  check(!discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value^="source:"]') &&
     discoveredEditor._config.app_launch_1 === 'source:com.example.cinema',
     'uninstalled apps disappear from choices while saved launcher configuration survives');
   const withoutCatalog = { ...catalogHass, states: { ...catalogHass.states } };
   delete withoutCatalog.states['sensor.firemote_apps'];
   discoveredEditor.hass = withoutCatalog;
   await discoveredEditor.updateComplete;
-  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1 &&
+  check(!discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value^="source:"]') &&
     discoveredEditor.shadowRoot.querySelector('.appCatalogStatus').textContent.includes('No installed-app catalog'), 'missing catalog reports the problem instead of offering system processes');
   const alternateConfig = { ...discoveredConfig, entity: 'media_player.other_tv', app_launch_1: 'source:com.example.cinema', app_launch_2: '' };
   const sameDeviceHass = { ...catalogHass, entities: { ...registry,
@@ -283,7 +283,7 @@ try {
   check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options[1].textContent === 'Cinema Room', 'catalog automatically matches another media player on the same device');
   discoveredEditor.hass = { ...sameDeviceHass, entities: registry };
   await discoveredEditor.updateComplete;
-  check(discoveredEditor.shadowRoot.querySelector('#app_launch_1').options.length === 1, 'catalog from an unrelated device is never selected implicitly');
+  check(!discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value^="source:"]'), 'catalog from an unrelated device is never selected implicitly');
   discoveredEditor.setConfig({ ...alternateConfig, entity: 'media_player.tv', app_catalog_entity: 'sensor.nonexistent' });
   await discoveredEditor.updateComplete;
   check(!discoveredEditor.shadowRoot.querySelector('#app_catalog_entity') &&

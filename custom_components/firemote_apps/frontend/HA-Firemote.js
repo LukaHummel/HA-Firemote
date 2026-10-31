@@ -4500,6 +4500,12 @@ class FiremoteCardEditor extends LitElement {
     const catalog = appCatalogState(this.hass, this._config);
     const discoveredApps = deviceApps(this.hass, this._config);
     const apps = (discoveredApps || []).map(app => ['source:' + encodeURIComponent(app.id), app.name]);
+    // Keep bundled system functions and configuration-derived inputs/custom
+    // launchers alongside installed apps, using their existing command IDs.
+    const shortcuts = [...getAppMap(this._config)]
+      .filter(([id, app]) => (id.startsWith('function-') || !baseAppMap.has(id)) &&
+        (!app.deviceFamily || app.deviceFamily.includes(this._config.device_family)))
+      .map(([value, app]) => ({ value, label: app.friendlyName }));
     const appValues = new Set(apps.map(([id]) => id));
     const heading = this.translateToUsrLang('App Launch Button');
     return html`
@@ -4525,6 +4531,7 @@ class FiremoteCardEditor extends LitElement {
         return html`${this._renderDropdown('app_launch_' + number, `${heading} ${number}`, [
           { value: '', label: ' - - - - ' },
           ...apps.map(([id, name]) => ({ value: id, label: name })),
+          ...shortcuts,
         ], value)}<br>`;
       })}
     `;
