@@ -499,6 +499,8 @@ This tends to happen when your Home Assistant UI needs a refresh.  The best way 
 In many cases, your remote control sends commands for volume, mute, and power to your TV or receiver using the IR emitter on the front of the physical remote control.  These IR commands cannot be sent in a traditional Home Assistant setup.
 <br>
 
+For the Chromecast device family (including Google TV Streamer), volume up, volume down, and mute use Android volume key events through the configured Android Debug Bridge media player. This lets Android route those keys to HDMI-CEC audio output, even when an associated Android TV Remote entity handles navigation. CEC volume control must be enabled on the player and connected TV or receiver.
+
 If your player device AND the device they are connected to both offer CEC options, then activating CEC will allow the Firemote card controls to work as expected.  [Click here](https://github.com/PRProd/HA-Firemote/wiki/Using-CEC-Controls) to learn more about how to [configure CEC to work with your Firemote](https://github.com/PRProd/HA-Firemote/wiki/Using-CEC-Controls).  Another option might be to control your devices (TVs, Receivers, etc.) using [Button Overrides](https://github.com/PRProd/HA-Firemote#button-overrides).  If you can control those kinds of devices through Home Assistant, you can write a HA script and attach that script to a button on your Firemote.
 <br>
 

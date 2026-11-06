@@ -263,6 +263,56 @@ try {
     idle(`${buttonID} releases device-specific hold resources`);
   }
 
+  // Google TV volume uses ADB even when navigation uses Android TV Remote.
+  for (const android_tv_remote_entity of [undefined, 'remote.android']) {
+    for (const compatibility_mode of ['default', 'strong', 'event2']) {
+      await configure({ device_family: 'chromecast', device_type: 'chromecast-4k', compatibility_mode, android_tv_remote_entity });
+      for (const [buttonID, keycode] of [
+        ['volume-up-button', 'KEYCODE_VOLUME_UP'], ['volume-down-button', 'KEYCODE_VOLUME_DOWN'], ['mute-button', 'KEYCODE_VOLUME_MUTE'],
+      ]) {
+        calls.length = 0;
+        await click(buttonID);
+        const expected = 'input keyevent ' + keycode;
+        check(calls.length === 1 && calls[0][0] === 'androidtv' && calls[0][1] === 'adb_command' &&
+          calls[0][2].entity_id === base.entity && calls[0][2].command === expected,
+          `Google TV ${buttonID} uses ADB key events in ${compatibility_mode} mode with remote ${android_tv_remote_entity}`);
+        idle('Google TV volume click cleans interaction resources');
+        calls.length = 0;
+        pointer(target(buttonID), 'pointerdown');
+        await advance(749);
+        check(calls.length === 0, 'Google TV volume hold preserves its initial repeat delay');
+        await advance(251);
+        const count = buttonID === 'mute-button' ? 0 : 2;
+        check(calls.length === count && calls.every(call => call[0] === 'androidtv' && call[2].command === expected),
+          'Google TV volume hold repeats every 250ms; mute hold remains a no-op');
+        pointer(document.body, 'pointerup');
+        await advance(1000);
+        check(calls.length === count, 'Google TV volume release outside the button stops CEC key events');
+        idle('Google TV volume hold cleans interaction resources');
+      }
+      if (android_tv_remote_entity) {
+        calls.length = 0;
+        await click('up-button');
+        check(calls.length === 1 && calls[0][0] === 'remote' && calls[0][2].command === 'KEYCODE_DPAD_UP',
+          'Google TV navigation continues to use the associated Android TV Remote');
+      }
+    }
+  }
+  for (const cancel of ['pointercancel', 'blur', 'config', 'disconnect']) {
+    await configure({ device_family: 'chromecast', android_tv_remote_entity: 'remote.android' });
+    pointer(target('volume-up-button'), 'pointerdown');
+    await advance(1000);
+    const count = calls.length;
+    if (cancel === 'pointercancel') pointer(document.body, cancel);
+    else if (cancel === 'blur') window.dispatchEvent(new Event(cancel));
+    else if (cancel === 'config') card.setConfig(base);
+    else card.remove();
+    await advance(1000);
+    check(count === 2 && calls.length === count, `${cancel} stops Google TV CEC volume repeats`);
+    idle(`${cancel} cleans Google TV volume resources`);
+    if (!card.isConnected) { document.body.append(card); await card.updateComplete; }
+  }
+
   const definition = Object.freeze({ label: 'Cinema', action: 'light.turn_on', target: Object.freeze({ entity_id: 'light.cinema' }), data: Object.freeze({ brightness: 99 }) });
   await configure({ custom_launchers: definition });
   const custom = document.createElement('button');
@@ -278,6 +328,13 @@ try {
   pointer(target('up-button'), 'pointerdown');
   check(calls.length === 1 && calls[0][1] === 'turn_on' && calls[0][2].brightness === 99, 'button overrides retain service and merged data support');
   idle('immediate overrides do not allocate a hold timer or release listeners');
+
+  await configure({ device_family: 'chromecast', android_tv_remote_entity: 'remote.android',
+    button_overrides: { 'volume-up-button': { service: 'media_player.volume_up', target: { entity_id: 'media_player.receiver' } } } });
+  await click('volume-up-button');
+  check(calls.length === 1 && calls[0][0] === 'media_player' && calls[0][1] === 'volume_up' &&
+    calls[0][2].entity_id === 'media_player.receiver', 'Google TV volume overrides take precedence over built-in CEC routing');
+  idle('Google TV volume override allocates no interaction resources');
 
   document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, checks: assertions });
 } catch (error) {
