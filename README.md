@@ -501,6 +501,18 @@ In many cases, your remote control sends commands for volume, mute, and power to
 
 For the Chromecast device family (including Google TV Streamer), volume up, volume down, and mute use Android volume key events through the configured Android Debug Bridge media player. This lets Android route those keys to HDMI-CEC audio output, even when an associated Android TV Remote entity handles navigation. CEC volume control must be enabled on the player and connected TV or receiver.
 
+Google TV has a separate CEC volume-forwarding setting: general CEC can be enabled while volume forwarding is disabled. If ADB volume key events do nothing, run `cmd hdmi_control cec_setting get volume_control_enabled` using `androidtv.adb_command` and inspect the media player's `adb_response` attribute. A value of `0` disables forwarding for volume up, volume down, and mute. To enable it, run this action once with your ADB media player entity:
+
+```yaml
+action: androidtv.adb_command
+target:
+  entity_id: media_player.your_adb_player
+data:
+  command: cmd hdmi_control cec_setting set volume_control_enabled 1
+```
+
+This setting was verified on Google TV Streamer running Android 14: after enabling it, ADB volume up/down and mute key events produced CEC messages acknowledged by the connected soundbar. Firemote does not change device settings automatically.
+
 If your player device AND the device they are connected to both offer CEC options, then activating CEC will allow the Firemote card controls to work as expected.  [Click here](https://github.com/PRProd/HA-Firemote/wiki/Using-CEC-Controls) to learn more about how to [configure CEC to work with your Firemote](https://github.com/PRProd/HA-Firemote/wiki/Using-CEC-Controls).  Another option might be to control your devices (TVs, Receivers, etc.) using [Button Overrides](https://github.com/PRProd/HA-Firemote#button-overrides).  If you can control those kinds of devices through Home Assistant, you can write a HA script and attach that script to a button on your Firemote.
 <br>
 

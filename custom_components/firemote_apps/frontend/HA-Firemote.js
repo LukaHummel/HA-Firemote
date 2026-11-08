@@ -3505,9 +3505,9 @@ class FiremoteCard extends LitElement {
 
 
 
-        // Google TV's Remote Service does not reliably forward volume to HDMI-CEC.
-        // Send Android volume key events through the configured ADB media player,
-        // even when navigation uses an associated Android TV Remote entity.
+        // Send Google TV volume key events through the configured ADB media player,
+        // even when navigation uses an associated Android TV Remote entity. Android's
+        // separate HDMI-CEC volume_control_enabled setting must also be enabled.
         const googleTVVolumeKey = {
           'volume-up-button': 'KEYCODE_VOLUME_UP',
           'volume-down-button': 'KEYCODE_VOLUME_DOWN',
