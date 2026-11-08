@@ -272,7 +272,7 @@ try {
       ]) {
         calls.length = 0;
         await click(buttonID);
-        const expected = 'input keyevent ' + keycode;
+        const expected = 'if [ "$(cmd hdmi_control cec_setting get volume_control_enabled 2>/dev/null)" = "volume_control_enabled = 0" ]; then cmd hdmi_control cec_setting set volume_control_enabled 1 >/dev/null 2>&1; fi; input keyevent ' + keycode;
         check(calls.length === 1 && calls[0][0] === 'androidtv' && calls[0][1] === 'adb_command' &&
           calls[0][2].entity_id === base.entity && calls[0][2].command === expected,
           `Google TV ${buttonID} uses ADB key events in ${compatibility_mode} mode with remote ${android_tv_remote_entity}`);

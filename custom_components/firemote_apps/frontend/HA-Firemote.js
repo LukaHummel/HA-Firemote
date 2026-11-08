@@ -3506,16 +3506,19 @@ class FiremoteCard extends LitElement {
 
 
         // Send Google TV volume key events through the configured ADB media player,
-        // even when navigation uses an associated Android TV Remote entity. Android's
-        // separate HDMI-CEC volume_control_enabled setting must also be enabled.
+        // even when navigation uses an associated Android TV Remote entity. Restore
+        // CEC volume forwarding if disabled, including after a reboot or settings change.
         const googleTVVolumeKey = {
           'volume-up-button': 'KEYCODE_VOLUME_UP',
           'volume-down-button': 'KEYCODE_VOLUME_DOWN',
           'mute-button': 'KEYCODE_VOLUME_MUTE',
         }[buttonID];
         if (deviceFamily === 'chromecast' && googleTVVolumeKey) {
+          // Check before setting to avoid reconfiguring HDMI audio on every repeat.
+          // Older firmware may lack this setting; still send the key event if so.
+          const ensureCECVolume = 'if [ "$(cmd hdmi_control cec_setting get volume_control_enabled 2>/dev/null)" = "volume_control_enabled = 0" ]; then cmd hdmi_control cec_setting set volume_control_enabled 1 >/dev/null 2>&1; fi; ';
           const send = () => _hass.callService('androidtv', 'adb_command', {
-            entity_id: entity, command: 'input keyevent ' + googleTVVolumeKey,
+            entity_id: entity, command: ensureCECVolume + 'input keyevent ' + googleTVVolumeKey,
           });
           if (actionType === 'click') send();
           else if (actionType === 'hold' && buttonID !== 'mute-button') interaction.repeat(send, 250);
