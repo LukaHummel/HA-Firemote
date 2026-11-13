@@ -61,6 +61,28 @@ try {
   styleEditor.remove();
   const card = await mount('firemote-card');
   const editor = await mount('firemote-card-editor');
+  const statusCard = await mount('firemote-card', { ...config, android_tv_remote_entity: 'remote.tv' });
+  const status = () => statusCard.shadowRoot.querySelector('.entity-status');
+  check(!status(), 'healthy entities have no status badge');
+  statusCard.hass = { ...hass, states: { ...hass.states, 'remote.tv': state('Remote', 'unavailable') } };
+  await statusCard.updateComplete;
+  check(status()?.textContent.includes('Remote unavailable') && status().title === 'remote.tv', 'remote outage shows a badge identifying the entity');
+  statusCard.hass = { ...hass, states: { ...hass.states, 'remote.tv': state('Remote', 'unknown'), 'media_player.tv': state('TV', 'unavailable') } };
+  await statusCard.updateComplete;
+  check(status()?.textContent.includes('ADB / Remote unavailable'), 'simultaneous outages identify both connections');
+  const missingRemote = { ...hass.states };
+  delete missingRemote['remote.tv'];
+  statusCard.hass = { ...hass, states: missingRemote };
+  await statusCard.updateComplete;
+  check(status()?.textContent.includes('Remote unavailable'), 'missing configured remote is reported');
+  statusCard.hass = { ...hass, states: { ...hass.states, 'remote.tv': state('Remote', 'off'), 'media_player.tv': state('TV', 'off') } };
+  await statusCard.updateComplete;
+  check(!status(), 'recovery clears the badge and off is available');
+  statusCard.setConfig({ ...config, entity: 'none', android_tv_remote_entity: 'none' });
+  await statusCard.updateComplete;
+  check(!status(), 'unconfigured entities do not show a warning');
+  statusCard.remove();
+
   check(card.shadowRoot.querySelector('ha-card'), 'card mounts with real Lit rendering');
   check(editor.shadowRoot.querySelector('#app_launch_1').value === 'source:YouTube', 'initial launcher selection is retained');
   check(/^Firemote frontend \d+\.\d+\.\d+$/.test(editor.shadowRoot.querySelector('.firemoteFrontendVersion').textContent), 'editor identifies the loaded frontend build');
@@ -245,8 +267,8 @@ try {
   check(!discoveredEditor.shadowRoot.querySelector('#app_launch_1 option[value^="source:"]'), 'unavailable installed-app catalog does not substitute running apps');
   discovered.hass = discoveredEditor.hass;
   await discovered.updateComplete;
-  check(!discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').querySelector('img'),
-    'catalog outages stop displaying stale app artwork on the panel');
+  check(discovered.shadowRoot.querySelector('.srcButton:not(.hidden)').querySelector('img'),
+    'catalog outages preserve cached app artwork on the panel');
   const restartedCatalogHass = { ...catalogHass, states: { ...catalogHass.states,
     'sensor.firemote_apps': { ...catalogState, attributes: { ...catalogState.attributes,
       apps: [{ id: 'com.example.cinema', name: 'Cinema after restart', icon: catalogState.attributes.apps[0].icon },

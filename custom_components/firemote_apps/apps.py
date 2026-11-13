@@ -58,7 +58,8 @@ def extract_metadata(apk_path, package, icon_path):
         activity = apk.get_main_activity()
         label = (
             apk.get_attribute_value("activity", "label", name=activity)
-            if activity else None
+            if activity
+            else None
         )
     name = label or package
     if name.startswith("@"):
@@ -66,10 +67,20 @@ def extract_metadata(apk_path, package, icon_path):
         try:
             reference = label[1:].split(":")
             if len(reference) == 1 or reference[0] == package:
-                name = resolve_string(
-                    apk.get_file("resources.arsc"), int(reference[-1], 16)
-                ) or package
-        except (ValueError, IndexError, StopIteration, StructError, KeyError, TypeError):
+                name = (
+                    resolve_string(
+                        apk.get_file("resources.arsc"), int(reference[-1], 16)
+                    )
+                    or package
+                )
+        except (
+            ValueError,
+            IndexError,
+            StopIteration,
+            StructError,
+            KeyError,
+            TypeError,
+        ):
             _LOGGER.debug("Could not resolve app label for %s", package, exc_info=True)
     candidates = []
     # First prefer legacy bitmap densities, then include nodpi and adaptive icons.
@@ -113,6 +124,9 @@ def extract_metadata(apk_path, package, icon_path):
                 image.convert("RGBA").save(icon_path, "PNG")
             break
         except Exception:
+            # A failed encoder can leave a partial PNG. It must never become a
+            # replacement for a known-good cached icon.
+            icon_path.unlink(missing_ok=True)
             _LOGGER.debug(
                 "No decodable bitmap at %s in %s", icon, package, exc_info=True
             )
@@ -139,15 +153,67 @@ class AppCatalog:
         except (OSError, ValueError):
             return {}
 
-    def _save(self, cache):
+    def _save(self, cache, installed=None, include_system_apps=False):
+        # Retain every learned icon: saved launchers on other dashboards may still
+        # reference an older URL, even after an app is removed or filtered out.
+        history = {**self._load(), **cache}
         path = self.cache_dir / "catalog.json"
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(cache))
+        temporary.write_text(json.dumps(history))
         temporary.replace(path)
-        keep = {item["icon_file"] for item in cache.values() if item.get("icon_file")}
-        for icon in self.icon_dir.glob("*.png"):
-            if icon.name not in keep:
-                icon.unlink(missing_ok=True)
+        if installed is not None:
+            snapshot = self.cache_dir / "installed.json"
+            temporary = snapshot.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "include_system_apps": include_system_apps,
+                        "apps": installed,
+                    }
+                )
+            )
+            temporary.replace(snapshot)
+
+    def _read_cache(self, include_system_apps):
+        history = self._load()
+        cached = []
+        for package, item in history.items():
+            app = {"id": package, "name": item["name"]}
+            if item.get("icon_file"):
+                app["icon"] = self.url_prefix + item["icon_file"]
+            cached.append(app)
+        try:
+            snapshot = json.loads((self.cache_dir / "installed.json").read_text())
+            installed = (
+                snapshot["apps"]
+                if snapshot["include_system_apps"] == include_system_apps
+                else []
+            )
+        except (OSError, ValueError, KeyError):
+            installed = []
+        return installed, cached
+
+    async def read_cache(self, include_system_apps=False):
+        async with self._scan_lock:
+            return await self.executor(self._read_cache, include_system_apps)
+
+    def _publish_icon(self, candidate, previous):
+        """Compare decoded image bytes before publishing an immutable icon URL."""
+        data = candidate.read_bytes()
+        old = previous.get("icon_file") if previous else None
+        if old:
+            try:
+                if (self.icon_dir / old).read_bytes() == data:
+                    return old
+            except FileNotFoundError:
+                pass
+        filename = sha256(data).hexdigest() + ".png"
+        destination = self.icon_dir / filename
+        if not destination.exists():
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_bytes(data)
+            temporary.replace(destination)
+        return filename
 
     async def _shell(self, device, command):
         return await asyncio.wait_for(device.adb_shell(command), timeout=30)
@@ -158,10 +224,10 @@ class AppCatalog:
             return await self._scan(device, include_system_apps)
 
     async def _scan(self, device, include_system_apps):
+        if not device.available:
+            raise RuntimeError("ADB is unavailable")
         package_command = "pm list packages" + ("" if include_system_apps else " -3")
-        installed = await self._shell(
-            device, package_command + " --show-versioncode"
-        )
+        installed = await self._shell(device, package_command + " --show-versioncode")
         if isinstance(installed, str) and re.search(
             r"unknown (?:command|option)|error:", installed, re.IGNORECASE
         ):
@@ -226,12 +292,9 @@ class AppCatalog:
                 continue
             fingerprint = sha256(
                 (
-                    f"metadata-v5\n{package}\n{versions[package]}\n"
-                    + "\n".join(paths)
+                    f"metadata-v5\n{package}\n{versions[package]}\n" + "\n".join(paths)
                 ).encode()
             ).hexdigest()
-            icon_file = fingerprint + ".png"
-            icon_path = self.icon_dir / icon_file
             item = previous.get(package)
             missing_icon = (
                 item
@@ -245,14 +308,24 @@ class AppCatalog:
                 )
                 try:
                     local_apk = Path(temporary.name) / "app.apk"
+                    icon_path = Path(temporary.name) / "icon.png"
                     await asyncio.wait_for(
                         device.adb_pull(str(local_apk), apk_path), timeout=180
                     )
                     item["name"] = await self.executor(
                         extract_metadata, local_apk, package, icon_path
                     )
+                    if not device.available:
+                        raise RuntimeError(
+                            "ADB disconnected during metadata extraction"
+                        )
                     if await self.executor(icon_path.is_file):
-                        item["icon_file"] = icon_file
+                        item["icon_file"] = await self.executor(
+                            self._publish_icon, icon_path, previous.get(package)
+                        )
+                    elif previous.get(package, {}).get("icon_file"):
+                        item["icon_file"] = previous[package]["icon_file"]
+                        item.pop("fingerprint", None)
                 except (
                     Exception
                 ):  # A single unreadable APK must not hide the other apps.
@@ -270,5 +343,8 @@ class AppCatalog:
             if item.get("icon_file"):
                 app["icon"] = self.url_prefix + item["icon_file"]
             apps.append(app)
-        await self.executor(self._save, cache)
-        return sorted(apps, key=lambda app: app["name"].casefold())
+        if not device.available:
+            raise RuntimeError("ADB disconnected during app discovery")
+        apps = sorted(apps, key=lambda app: app["name"].casefold())
+        await self.executor(self._save, cache, apps, include_system_apps)
+        return apps

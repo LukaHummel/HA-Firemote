@@ -61,3 +61,9 @@ CI also installs the integration manifest's actual runtime requirements in a cle
 Python 3.14 environment using binary distributions only, then imports the APK
 parser and runs the catalog tests. This catches packaging failures that unit
 mocks and an older Home Assistant test environment cannot detect.
+
+Persistent-icon regressions cover identical image content retaining its URL and
+file timestamp, changed content receiving an immutable URL, old URL retention,
+missing/failed extractions and mid-pull disconnects preserving previous icons,
+offline restart restoration, and dashboard rendering from cached metadata while
+discovery remains unavailable. Installed-app choices still exclude removed apps.

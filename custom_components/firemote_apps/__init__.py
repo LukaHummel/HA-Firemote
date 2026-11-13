@@ -54,16 +54,12 @@ async def async_setup(hass, config):
 
 
 async def async_setup_entry(hass, entry):
-    """Set up a UI-configured TV after its ADB connection is initialized."""
+    """Load cached dashboards even before the ADB connection is initialized."""
     entity = er.async_get(hass).async_get(entry.data[CONF_ENTITY])
     adb_entry = (
         hass.config_entries.async_get_entry(entity.config_entry_id) if entity else None
     )
-    if (
-        not adb_entry
-        or adb_entry.domain != "androidtv"
-        or not getattr(getattr(adb_entry, "runtime_data", None), "aftv", None)
-    ):
+    if not adb_entry or adb_entry.domain != "androidtv":
         raise ConfigEntryNotReady(
             "The selected Android Debug Bridge media player is not ready"
         )

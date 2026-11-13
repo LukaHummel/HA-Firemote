@@ -4,6 +4,22 @@ import {launcherCSS} from './launcher-buttons.js?version=v4.1.9';
 export const remoteStyles = css`
           :host {
             display: block;
+            position: relative;
+          }
+
+          .entity-status {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            z-index: 10;
+            max-width: calc(100% - 24px);
+            padding: 3px 8px;
+            border-radius: 12px;
+            background: var(--ha-card-background, var(--card-background-color, #fff));
+            color: var(--warning-color, #e69100);
+            box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+            font-size: 11px;
+            line-height: 16px;
           }
 
           .viewport-scale-frame {

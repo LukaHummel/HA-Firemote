@@ -26,6 +26,8 @@ if HAS_HA:
     from custom_components.firemote_apps.sensor import (
         SCAN_INTERVAL,
         FiremoteApps,
+    )
+    from custom_components.firemote_apps.sensor import (
         async_setup_entry as setup_sensor,
     )
 
@@ -145,6 +147,18 @@ class SetupFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConfigEntryNotReady):
             await async_setup_entry(self.hass, entry)
 
+    async def test_offline_adb_runtime_still_loads_cached_sensor(self):
+        entry = Mock(data={"entity_id": "media_player.tv"})
+        self.registry.async_get.return_value = SimpleNamespace(config_entry_id="adb")
+        self.hass.config_entries.async_get_entry.return_value = SimpleNamespace(
+            domain="androidtv", runtime_data=None
+        )
+        self.hass.config_entries.async_forward_entry_setups = AsyncMock()
+        self.assertTrue(await async_setup_entry(self.hass, entry))
+        self.hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+            entry, [Platform.SENSOR]
+        )
+
     async def test_sensor_setup_uses_options_over_imported_data(self):
         entry = SimpleNamespace(
             data={"entity_id": "media_player.tv", "include_system_apps": False},
@@ -184,13 +198,30 @@ class SensorLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.registry = Mock()
         self.registry.async_get.return_value = SimpleNamespace(config_entry_id="adb")
         registry_patch = patch(
-            "homeassistant.helpers.entity_registry.async_get", return_value=self.registry
+            "homeassistant.helpers.entity_registry.async_get",
+            return_value=self.registry,
         )
         registry_patch.start()
         self.addCleanup(registry_patch.stop)
+        self.sensor.catalog.read_cache = AsyncMock(return_value=([], []))
         self.sensor.catalog.scan = AsyncMock(
             return_value=[{"id": "com.example.app", "name": "Example"}]
         )
+
+    async def test_offline_restart_loads_persistent_icon_metadata(self):
+        cached = [
+            {
+                "id": "com.example.app",
+                "name": "Example",
+                "icon": "/firemote/icons/cached.png",
+            }
+        ]
+        self.sensor.catalog.read_cache.return_value = (cached, cached)
+        self.device.available = False
+        await self.sensor.async_update()
+        self.assertFalse(self.sensor.available)
+        self.assertEqual(self.sensor.extra_state_attributes["cached_apps"], cached)
+        self.sensor.catalog.scan.assert_not_awaited()
 
     def source_changed(self, old, new):
         self.sensor._async_source_changed(
@@ -249,10 +280,13 @@ class SensorLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_listener_is_removed_on_unload_and_closes_startup_race(self):
         self.hass.states.get.return_value = SimpleNamespace(state="idle")
         unsubscribe = Mock()
-        with patch(
-            "custom_components.firemote_apps.sensor.async_track_state_change_event",
-            return_value=unsubscribe,
-        ) as track, patch.object(self.sensor, "async_on_remove") as on_remove:
+        with (
+            patch(
+                "custom_components.firemote_apps.sensor.async_track_state_change_event",
+                return_value=unsubscribe,
+            ) as track,
+            patch.object(self.sensor, "async_on_remove") as on_remove,
+        ):
             await self.sensor.async_added_to_hass()
         track.assert_called_once_with(
             self.hass, ["media_player.tv"], self.sensor._async_source_changed
@@ -279,7 +313,9 @@ class SensorLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("custom_components.firemote_apps.sensor", level="WARNING"):
             await self.sensor.async_update()
         self.assertFalse(self.sensor.available)
-        self.assertEqual(self.sensor.extra_state_attributes["apps"][0]["name"], "Example")
+        self.assertEqual(
+            self.sensor.extra_state_attributes["apps"][0]["name"], "Example"
+        )
         self.sensor.catalog.scan.side_effect = None
         await self.sensor.async_update()
         self.assertTrue(self.sensor.available)

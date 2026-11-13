@@ -2,11 +2,11 @@
 
 import asyncio
 import importlib.util
-import tempfile
 import sys
-from types import ModuleType
+import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 PACKAGE_PATH = Path(__file__).parents[1] / "custom_components/firemote_apps"
@@ -34,6 +34,7 @@ class Device:
         self.version_code = 1
         self.hidden_packages = set()
         self.fail = False
+        self.available = True
 
     async def adb_shell(self, command):
         self.commands.append(command)
@@ -41,7 +42,8 @@ class Device:
             return None
         if command.startswith("pm list packages"):
             return "\n".join(
-                "package:" + p
+                "package:"
+                + p
                 + (
                     f" versionCode:{self.version_code}"
                     if "--show-versioncode" in command
@@ -109,7 +111,70 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
         self.device.packages = []
         self.assertEqual(await catalog.scan(self.device), [])
-        self.assertEqual(list((self.root / "icons").glob("*.png")), [])
+        self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
+
+    async def test_identical_icon_keeps_url_and_file_timestamp(self):
+        original = await self.catalog.scan(self.device)
+        icon = next((self.root / "icons").glob("*.png"))
+        before = icon.stat().st_mtime_ns
+        self.device.version_code += 1
+        result = await self.catalog.scan(self.device)
+        self.assertEqual(result, original)
+        self.assertEqual(icon.stat().st_mtime_ns, before)
+
+    async def test_different_icon_is_published_without_destroying_old_url(self):
+        original = await self.catalog.scan(self.device)
+        old_icon = next((self.root / "icons").glob("*.png"))
+        self.device.version_code += 1
+
+        def updated(local, package, icon):
+            icon.write_bytes(b"different normalized PNG")
+            return "Cinema"
+
+        with patch.object(apps, "extract_metadata", side_effect=updated):
+            result = await self.catalog.scan(self.device)
+        self.assertNotEqual(result[0]["icon"], original[0]["icon"])
+        self.assertEqual(old_icon.read_bytes(), b"png fixture")
+        self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 2)
+
+    async def test_missing_new_bitmap_keeps_previous_icon(self):
+        original = await self.catalog.scan(self.device)
+        self.device.version_code += 1
+        with patch.object(apps, "extract_metadata", return_value="Cinema"):
+            result = await self.catalog.scan(self.device)
+        self.assertEqual(result, original)
+        self.assertNotIn("fingerprint", self.catalog._load()["com.example.cinema"])
+
+    async def test_offline_restart_restores_installed_and_archived_metadata(self):
+        original = await self.catalog.scan(self.device)
+        self.device.packages = []
+        await self.catalog.scan(self.device)
+        restarted = apps.AppCatalog(
+            self.root / "cache", self.root / "icons", "/local/icons/", asyncio.to_thread
+        )
+        installed, cached = await restarted.read_cache()
+        self.assertEqual(installed, [])
+        self.assertEqual(cached, original)
+        self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
+
+    async def test_disconnect_during_pull_preserves_snapshot_and_icon(self):
+        original = await self.catalog.scan(self.device)
+        self.device.version_code += 1
+
+        async def disconnected(local, remote):
+            Path(local).write_bytes(b"fixture")
+            self.device.available = False
+
+        self.device.adb_pull = disconnected
+        with (
+            self.assertLogs(apps._LOGGER, level="WARNING"),
+            self.assertRaises(RuntimeError),
+        ):
+            await self.catalog.scan(self.device)
+        installed, cached = await self.catalog.read_cache()
+        self.assertEqual(installed, original)
+        self.assertEqual(cached, original)
+        self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
 
     async def test_old_metadata_cache_is_refreshed(self):
         from hashlib import sha256
@@ -148,7 +213,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(apps, "extract_metadata", side_effect=updated_metadata):
             result = await self.catalog.scan(self.device)
         self.assertEqual(result[0]["name"], "Cinema updated")
-        self.assertNotEqual(result[0]["icon"], original[0]["icon"])
+        self.assertEqual(result[0]["icon"], original[0]["icon"])
         self.assertEqual(self.device.pulls, 2)
         self.assertEqual(len(list((self.root / "icons").glob("*.png"))), 1)
 
@@ -187,7 +252,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.catalog.scan(self.device), original)
         result = await self.catalog.scan(self.device)
         self.assertEqual(result[0]["name"], "Cinema")
-        self.assertNotEqual(result[0]["icon"], original[0]["icon"])
+        self.assertEqual(result[0]["icon"], original[0]["icon"])
         self.assertEqual(self.device.pulls, 3)
 
     async def test_concurrent_refreshes_share_one_serial_cache(self):
@@ -277,7 +342,9 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
 class ExtractionTests(unittest.TestCase):
     """Exercise resource selection without requiring APK parser dependencies."""
 
-    def extract(self, icons, resources=None, attributes=None, files=None):
+    def extract(
+        self, icons, resources=None, attributes=None, files=None, failed_save=False
+    ):
         import sys
         from types import SimpleNamespace
 
@@ -293,7 +360,9 @@ class ExtractionTests(unittest.TestCase):
                 return icons.get(max_dpi)
 
             def get_attribute_value(self, _, attribute):
-                return attributes.get(attribute, "Prime Video" if attribute == "label" else None)
+                return attributes.get(
+                    attribute, "Prime Video" if attribute == "label" else None
+                )
 
             def get_android_resources(self):
                 return SimpleNamespace(get_resolved_res_configs=lambda _: resources)
@@ -322,6 +391,8 @@ class ExtractionTests(unittest.TestCase):
 
             def save(self, path, _):
                 path.write_bytes(b"normalized PNG")
+                if failed_save:
+                    raise OSError("Interrupted PNG write")
 
         with (
             tempfile.TemporaryDirectory() as temp,
@@ -341,8 +412,9 @@ class ExtractionTests(unittest.TestCase):
         from test_apk_resources import table
 
         self.assertEqual(
-            self.extract({}, attributes={"label": "@7F13001E"},
-                         files={"resources.arsc": table()}),
+            self.extract(
+                {}, attributes={"label": "@7F13001E"}, files={"resources.arsc": table()}
+            ),
             ("Stremio", False),
         )
 
@@ -350,10 +422,19 @@ class ExtractionTests(unittest.TestCase):
         for label in ("@7f13001d", "@android:01040000", "@string/missing"):
             with self.subTest(label=label):
                 self.assertEqual(
-                    self.extract({}, attributes={"label": label},
-                                 files={"resources.arsc": b"invalid"}),
+                    self.extract(
+                        {},
+                        attributes={"label": label},
+                        files={"resources.arsc": b"invalid"},
+                    ),
                     ("com.amazon.video", False),
                 )
+
+    def test_partial_png_write_is_not_published(self):
+        self.assertEqual(
+            self.extract({65533: "res/icon.png"}, failed_save=True),
+            ("Prime Video", False),
+        )
 
     def test_nodpi_icon_is_not_excluded(self):
         self.assertEqual(

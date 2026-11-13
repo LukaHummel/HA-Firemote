@@ -1,12 +1,12 @@
 const HAFiremoteVersion = 'v4.1.9';
-const FiremoteFrontendVersion = '0.2.6';
+const FiremoteFrontendVersion = '0.2.7';
 
 import {LitElement, html, css, unsafeHTML, styleMap, repeat} from './lit/lit-all.min.js';
 import {launcherData} from "./launcher-buttons.js?version=v4.1.9";
 import {rosettaStone} from './language-translations.js?version=v4.1.9';
 import {devices} from './supported-devices.js?version=v4.1.9';
 import {remoteStyles} from './remote-styles.js';
-import {appCatalogState, deviceApps, resolveDeviceApp, decodeSource} from './app-catalog.js';
+import {appCatalogState, deviceApps, savedDeviceApps, resolveDeviceApp, decodeSource} from './app-catalog.js';
 import {remoteDimensions, calculateLayoutCellHeight, calculateLayoutCellWidth, calculateMasonryViewHeight, unscrolledTop} from './remote-layouts.js';
 
 console.groupCollapsed("%c 🔥 FIREMOTE-CARD 🔥 %c "+HAFiremoteVersion+" installed ", "color: orange; font-weight: bold; background: black", "color: green; font-weight: bold;"),
@@ -426,14 +426,35 @@ class FiremoteCard extends LitElement {
 
   render() {
     const remote = this.renderRemote();
-    if (!this._viewportScaling) return remote;
+    if (!this._viewportScaling) return html`${this.renderEntityStatus()}${remote}`;
+    return this.renderScaledRemote(remote);
+  }
+
+  renderScaledRemote(remote) {
     return html`
+      ${this.renderEntityStatus()}
       <div class="viewport-scale-frame">
         <div class="viewport-scale-container">
           <div class="viewport-scale-content">${remote}</div>
         </div>
       </div>
     `;
+  }
+
+  renderEntityStatus() {
+    if (!this.hass || !this._config) return html``;
+    const ids = [...new Set([this._config.entity, this._config.android_tv_remote_entity])]
+      .filter(id => id && id !== 'none');
+    const unavailable = ids.filter(id => {
+      const state = this.hass.states[id]?.state;
+      return !state || state === 'unavailable' || state === 'unknown';
+    });
+    if (!unavailable.length) return html``;
+    const labels = unavailable.map(id => id.startsWith('remote.') ? 'Remote' :
+      ['amazon-fire', 'chromecast', 'homatics', 'nvidia-shield', 'onn', 'xiaomi'].includes(this._config.device_family) ? 'ADB' : 'Device');
+    return html`<div class="entity-status" role="status" title=${unavailable.join(', ')}>
+      ⚠ ${[...new Set(labels)].join(' / ')} unavailable
+    </div>`;
   }
 
   renderRemote() {
@@ -566,7 +587,7 @@ class FiremoteCard extends LitElement {
       return [details.androidName, details.androidName2, details.appName].includes(appId) ? 'appActive' : '';
     }
 
-    const discoveredApps = deviceApps(this.hass, this._config);
+    const discoveredApps = savedDeviceApps(this.hass, this._config);
 
     function drawAppLaunchButtons(e, config, cols=3, max=6) {
         if (getDeviceAttribute('defaultRemoteStyle') === 'AL1' || getDeviceAttribute('defaultRemoteStyle') === 'AL2') {

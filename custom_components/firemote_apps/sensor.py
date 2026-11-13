@@ -45,6 +45,8 @@ class FiremoteApps(SensorEntity):
         self._attr_unique_id = f"firemote_apps_{source}"
         self._attr_available = False
         self._apps = []
+        self._cached_apps = []
+        self._cache_loaded = False
         key = sha256(source.encode()).hexdigest()[:16]
         self.catalog = AppCatalog(
             hass.config.path(".storage", "firemote_apps", key),
@@ -58,6 +60,7 @@ class FiremoteApps(SensorEntity):
         return {
             "firemote_entity": self.source,
             "apps": self._apps,
+            "cached_apps": self._cached_apps,
             "include_system_apps": self.include_system_apps,
         }
 
@@ -92,6 +95,12 @@ class FiremoteApps(SensorEntity):
             self.async_schedule_update_ha_state(force_refresh=True)
 
     async def async_update(self):
+        if not self._cache_loaded:
+            self._apps, self._cached_apps = await self.catalog.read_cache(
+                self.include_system_apps
+            )
+            self._attr_native_value = len(self._apps)
+            self._cache_loaded = True
         entry = er.async_get(self.hass).async_get(self.source)
         config_entry = (
             self.hass.config_entries.async_get_entry(entry.config_entry_id)
@@ -110,6 +119,9 @@ class FiremoteApps(SensorEntity):
             return
         try:
             self._apps = await self.catalog.scan(device, self.include_system_apps)
+            _, self._cached_apps = await self.catalog.read_cache(
+                self.include_system_apps
+            )
         except Exception:
             self._attr_available = False
             _LOGGER.warning(

@@ -5,6 +5,7 @@ const appIndexes = new WeakMap();
 const filteredApps = new WeakMap();
 const sourceApps = new WeakMap();
 const emptyApps = Object.freeze([]);
+const savedAppIndexes = new WeakMap();
 
 function indexCatalogs(states) {
   let index = catalogIndexes.get(states);
@@ -62,6 +63,27 @@ export function deviceApps(hass, config) {
     apps = [...new Set(sources.filter(source => typeof source === 'string' && source.trim()))]
       .map(source => ({ id: source, name: source }));
     sourceApps.set(sources, apps);
+  }
+  return apps;
+}
+
+// Rendering saved launchers must work while discovery is offline or an app has
+// left the installed list. This history is not offered as new editor choices.
+export function savedDeviceApps(hass, config) {
+  const catalog = appCatalogState(hass, config);
+  if (!catalog) return deviceApps(hass, config);
+  const attributes = catalog.attributes;
+  let apps = savedAppIndexes.get(attributes);
+  if (!apps) {
+    const byId = new Map();
+    const cached = Array.isArray(attributes.cached_apps) ? attributes.cached_apps : emptyApps;
+    for (const app of [...attributes.apps, ...cached]) {
+      if (typeof app?.id === 'string' && app.id && typeof app.name === 'string' && !byId.has(app.id)) {
+        byId.set(app.id, app);
+      }
+    }
+    apps = [...byId.values()];
+    savedAppIndexes.set(attributes, apps);
   }
   return apps;
 }

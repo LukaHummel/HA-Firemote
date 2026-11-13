@@ -107,8 +107,9 @@ Icons are normalized to PNG, at most 192 × 192 pixels, under
 `/config/www/firemote_apps/` and served through the integration’s explicitly
 registered `/firemote/icons/` route. These
 static icon files are accessible without Home Assistant authentication, like
-other files in `www`; no APKs or credentials are served. Uninstalled apps' icons
-are removed on a successful scan. Remove both directories to erase the cache.
+other files in `www`; no APKs or credentials are served. Previously discovered icons
+are retained for existing dashboard buttons even after an app is uninstalled or
+filtered out. Remove both directories only when you intend to erase the cache.
 
 Icon extraction checks all bitmap resource variants and TV banners rather than
 only the preferred density. Missing labels fall back to package IDs.
@@ -187,3 +188,23 @@ After updating, fully reload the dashboard tab (Ctrl+Shift+R); reopening the car
 editor or restarting Home Assistant does not replace JavaScript already loaded
 in an open tab. Keep the stable `/firemote/frontend/HA-Firemote.js` resource URL.
 You do not need to re-add the resource on each update.
+
+## Persistent dashboard icons
+
+Icons and app names are cached centrally by the integration, so all dashboards
+and clients share them. The cache retains every learned app icon, including apps
+that are later removed or hidden from the installed-app dropdown; this ensures
+saved launchers on any dashboard keep their artwork. Cached icon history is used
+for rendering saved buttons, not for adding absent apps to the dropdown.
+
+On Home Assistant restart, cached metadata loads from disk even if the ADB
+connection is not ready. A catalog can remain unavailable for discovery while
+its saved buttons continue to use cached icons. An ADB outage, failed APK pull,
+failed extraction, or update with no usable bitmap preserves the previous image.
+
+Replacement icons are extracted to temporary files and compared by their
+normalized PNG content. Identical images keep their existing URL and file.
+Different images are published atomically under content-based URLs only after
+successful ADB retrieval. Previous URLs are retained for dashboards and browsers
+that still reference them. The cache grows with distinct learned icons; it is
+not automatically pruned based on the currently installed apps.

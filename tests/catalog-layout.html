@@ -4,7 +4,7 @@
 <pre id="results">Running…</pre>
 <script type="module">
 import '../custom_components/firemote_apps/frontend/HA-Firemote.js';
-import {appCatalogState, deviceApps, resolveDeviceApp, decodeSource} from '../custom_components/firemote_apps/frontend/app-catalog.js';
+import {appCatalogState, deviceApps, savedDeviceApps, resolveDeviceApp, decodeSource} from '../custom_components/firemote_apps/frontend/app-catalog.js';
 
 const assertions = [];
 function check(condition, message) {
@@ -56,6 +56,12 @@ try {
   check(resolveDeviceApp(deviceApps(refreshed, config), app.id).name === 'Updated Cinema', 'new state snapshots refresh app names');
   check(deviceApps({ ...hass, states: { 'sensor.apps': { ...sensor, state: 'unavailable' } } }, config).length === 0,
     'unavailable catalogs do not expose stale apps');
+  const offline = { ...hass, states: { 'sensor.apps': { ...sensor, state: 'unavailable', attributes: {
+    ...sensor.attributes, apps: [], cached_apps: [app],
+  } } } };
+  check(savedDeviceApps(offline, config)[0] === app, 'offline saved launchers retain persistent icon metadata');
+  check(deviceApps(offline, config).length === 0, 'offline cached icons do not repopulate installed-app editor choices');
+  check(savedDeviceApps(offline, config) === savedDeviceApps(offline, config), 'saved icon indexes reuse immutable catalog attributes');
   check(deviceApps({ states: {} }, config) === null, 'Android devices never substitute running processes for a catalog');
   const roku = { states: { 'media_player.roku': { attributes: { source_list: ['Netflix', null, 'Netflix', ' ', 'Cinema'] } } } };
   const rokuConfig = { entity: 'media_player.roku', device_family: 'roku' };
@@ -129,6 +135,11 @@ try {
   await card.updateComplete;
   check(getComputedStyle(card.shadowRoot.querySelector('.appLauncherAppsContainer')).getPropertyValue('--sz') === numericSize,
     'resetting launcher size to string zero keeps the same scale as numeric zero');
+  card.hass = { ...offline, config: { language: 'en' }, states: { ...offline.states, 'media_player.adb': { state: 'unavailable', attributes: {} } } };
+  card.setConfig({ ...config, device_type: 'fire_tv_4_series', defaultRemoteStyle_override: 'AL2', app_launch_1: 'source:com.example.tv' });
+  await card.updateComplete;
+  const savedIcon = card.shadowRoot.querySelector('.deviceAppIcon');
+  check(savedIcon && savedIcon.getAttribute('src') === app.icon, 'rendered dashboard uses persisted icon while ADB is unavailable');
   card.remove();
 
   document.querySelector('#results').textContent = JSON.stringify({ status: 'passed', assertions: assertions.length, checks: assertions });
